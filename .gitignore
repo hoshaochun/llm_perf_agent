@@ -1,0 +1,19 @@
+# Secrets
+.env
+.env.*
+
+# Python
+.venv/
+vllm_env/
+__pycache__/
+*.pyc
+*.pyo
+
+# Pipeline artefacts (regenerated from .nsys-rep)
+out/
+
+# Profiling reports (large nsys binaries; users supply their own)
+perf_reports/
+*.nsys-rep
+*.sqlite
+*.qdrep

@@ -1,0 +1,215 @@
+"""Segment the trace into per-iter layer-loop + epilogue+prologue.
+
+Stage 3 of the pipeline.
+
+Reads `out/<stem>/kernel_flow.parquet` and `out/<stem>/canonical.json`,
+and segments the full trace using the canonical layer pattern as a
+sliding-window template.
+
+For each position p in the trace, we count how many of the next P
+kernel names match the canonical pattern position-by-position;
+positions where the match fraction >= MATCH_THRESHOLD (default 0.7)
+are LAYER STARTS.  This:
+
+  - REJECTS same-name false positives (e.g. the final norm kernel
+    which has the same name as the per-layer pre-attn norm but is
+    followed by lm_head + sampling, not by qkv).
+  - ACCEPTS layer 0 of an iter when its first kernel is fused with
+    embedding (different name from pos 0 of the canonical, but the
+    remaining P-1 positions still match).
+
+Layer starts spaced exactly P apart belong to the same iter; gaps
+larger than P mark iter boundaries.
+
+For each iter we compute:
+  layer_loop = trace[layer_loop_start, layer_loop_start + N*P - 1]
+  epi+prologue = trace[layer_loop_end + 1, next_iter_layer_loop_start - 1]
+
+We pick ONE rep iter (default: iter 5 for decode skipping prefill, 0
+for prefill) and emit:
+  - the rep iter's full layer-loop kernels (N*P entries)
+  - the rep iter's last-layer kernels (final P entries)
+  - the rep iter's epi+prologue kernels (variable length)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+
+MATCH_THRESHOLD = 0.7  # fraction of canonical positions that must match
+PREFILL_ITERS_TO_SKIP = 5
+
+
+def find_layer_starts(flow: pd.DataFrame, canonical_names: list[str],
+                      threshold: float = MATCH_THRESHOLD) -> np.ndarray:
+    """Return trace positions p where trace[p:p+P] matches canonical."""
+    P = len(canonical_names)
+    n = len(flow)
+    short_names = flow["short_name"].to_numpy()
+    match_count = np.zeros(n - P + 1, dtype=np.int32)
+    for i in range(P):
+        match_count += (short_names[i:n - P + 1 + i] ==
+                        canonical_names[i]).astype(np.int32)
+    min_matches = int(np.ceil(threshold * P))
+    return np.where(match_count >= min_matches)[0]
+
+
+def group_into_iters(matches: np.ndarray, period: int, num_layers: int
+                     ) -> list[dict]:
+    """Group P-spaced layer matches into per-iter records."""
+    if len(matches) == 0:
+        return []
+    deltas = np.diff(matches)
+    breaks = np.where(deltas != period)[0]
+    starts = [0, *(int(b) + 1 for b in breaks)]
+    ends = [*(int(b) for b in breaks), len(matches) - 1]
+
+    iters: list[dict] = []
+    skipped: list[int] = []
+    for rs, re_ in zip(starts, ends):
+        K = re_ - rs + 1
+        first = int(matches[rs])
+        last = int(matches[re_])
+        if K == num_layers:
+            ll_start = first
+        elif K == num_layers - 1:
+            # Layer 0 missing (different first kernel name, e.g. embedding-
+            # fused norm); extend backward by one period.
+            ll_start = first - period
+            if ll_start < 0:
+                skipped.append(K)
+                continue
+        else:
+            skipped.append(K)
+            continue
+        ll_end = ll_start + num_layers * period - 1
+        iters.append({"layer_loop_start": ll_start,
+                      "layer_loop_end": ll_end,
+                      "first_match": first,
+                      "last_match": last,
+                      "K": K})
+    if skipped:
+        print(f"# {len(skipped)} run(s) skipped (K values: "
+              f"{skipped[:10]}{'...' if len(skipped) > 10 else ''})")
+    return iters
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("stem")
+    ap.add_argument("--mode", required=True, choices=("prefill", "decode"))
+    ap.add_argument("--num-layers", type=int, required=True)
+    ap.add_argument("--rep-iter", type=int, default=None,
+                    help="0-based iter index to use as the rep iter "
+                         f"(default: {PREFILL_ITERS_TO_SKIP} for decode, "
+                         "0 for prefill)")
+    args = ap.parse_args()
+
+    out_dir = ROOT / "out" / args.stem
+    flow = pd.read_parquet(out_dir / "kernel_flow.parquet").reset_index(drop=True)
+    canonical = json.loads((out_dir / "canonical.json").read_text())
+    period = int(canonical["period"])
+    canonical_names = [e["name"] for e in canonical["layer_pattern"]]
+    print(f"# period P = {period}, num_layers = {args.num_layers}")
+
+    matches = find_layer_starts(flow, canonical_names)
+    min_matches = int(np.ceil(MATCH_THRESHOLD * period))
+    print(f"# {len(matches)} layer-start matches "
+          f"(>= {min_matches}/{period} canonical positions matched)")
+
+    iters = group_into_iters(matches, period, args.num_layers)
+    if not iters:
+        print("ERROR: no complete iters detected", file=sys.stderr)
+        return 1
+    K_dist = sorted({it["K"] for it in iters})
+    print(f"# {len(iters)} complete iters detected (K values: {K_dist})")
+
+    is_prefill = args.mode == "prefill"
+    if args.rep_iter is not None:
+        rep = args.rep_iter
+    else:
+        rep = 0 if is_prefill else PREFILL_ITERS_TO_SKIP
+    if rep >= len(iters):
+        print(f"ERROR: requested rep_iter={rep} but only {len(iters)} "
+              f"iters detected", file=sys.stderr)
+        return 1
+    rep_info = iters[rep]
+    next_info = iters[rep + 1] if rep + 1 < len(iters) else None
+
+    ll_start = rep_info["layer_loop_start"]
+    ll_end = rep_info["layer_loop_end"]
+    epi_start = ll_end + 1
+    epi_end = (next_info["layer_loop_start"] - 1
+               if next_info is not None else len(flow) - 1)
+
+    layer_loop = flow.iloc[ll_start:ll_end + 1].reset_index(drop=True)
+    epi = flow.iloc[epi_start:epi_end + 1].reset_index(drop=True)
+    last_layer = flow.iloc[ll_end + 1 - period:ll_end + 1].reset_index(drop=True)
+    t0 = int(layer_loop["start"].iloc[0])
+
+    layer_loop_records = []
+    for j, r in enumerate(layer_loop.itertuples()):
+        layer_loop_records.append({
+            "i": j,
+            "layer": j // period,
+            "pos": j % period,
+            "t_us": round((int(r.start) - t0) / 1e3, 2),
+            "dur_us": round(r.dur_ns / 1e3, 3),
+            "name": r.short_name,
+        })
+
+    last_layer_records = []
+    for j, r in enumerate(last_layer.itertuples()):
+        last_layer_records.append({
+            "i": j,
+            "pos": j,
+            "t_us": round((int(r.start) - t0) / 1e3, 2),
+            "dur_us": round(r.dur_ns / 1e3, 3),
+            "name": r.short_name,
+        })
+
+    epi_records = []
+    for j, r in enumerate(epi.itertuples()):
+        epi_records.append({
+            "i": j,
+            "t_us": round((int(r.start) - t0) / 1e3, 2),
+            "dur_us": round(r.dur_ns / 1e3, 3),
+            "name": r.short_name,
+        })
+
+    out_obj = {
+        "profile_stem": args.stem,
+        "mode": args.mode,
+        "num_layers": args.num_layers,
+        "period": period,
+        "n_iters_detected": len(iters),
+        "rep_iter_index": rep,
+        "rep_iter_K": rep_info["K"],
+        "rep_iter_layer_loop_start": int(ll_start),
+        "rep_iter_layer_loop_end": int(ll_end),
+        "rep_iter_epi_start": int(epi_start),
+        "rep_iter_epi_end": int(epi_end),
+        "all_iter_starts": [int(it["layer_loop_start"]) for it in iters],
+        "layer_loop": layer_loop_records,
+        "last_layer": last_layer_records,
+        "epi_prologue": epi_records,
+    }
+    out_path = out_dir / "segmented.json"
+    out_path.write_text(json.dumps(out_obj, indent=2))
+    print(f"\n-> wrote {out_path}")
+    print(f"# rep iter = {rep}; layer_loop = trace[{ll_start}..{ll_end}] "
+          f"({len(layer_loop)} kernels = {args.num_layers} x {period})")
+    print(f"# epi+prologue   = trace[{epi_start}..{epi_end}] "
+          f"({len(epi)} kernels)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
