@@ -5,7 +5,7 @@
 #   1. solve max output_len via max_output_len.py;
 #   2. capture an nsys profile (one decode run);
 #   3. run the analysis pipeline (run_pipeline.sh) on the freshly-written
-#      .nsys-rep to get a per-iter latency breakdown in out/<stem>/.
+#      .nsys-rep to get a per-iter latency breakdown in out/<profile_name>/.
 #
 # A pipeline failure on a single profile does NOT abort the sweep -- we
 # log the failure and continue, then summarize whatever succeeded at the

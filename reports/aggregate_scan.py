@@ -1,11 +1,11 @@
 """Aggregate latency breakdowns across a sweep of profiles.
 
 Reads every `*.nsys-rep` in <scan_dir> and looks up its
-`out/<stem>/breakdown.json`.  Prints a cross-profile table:
+`out/<profile_name>/breakdown.json`.  Prints a cross-profile table:
 
-  - decode sweep (stems like `decode_bs<B>_out<O>`):
+  - decode sweep (profile_names like `decode_bs<B>_out<O>`):
       one row per batch_size with iter-latency + per-category breakdown.
-  - prefill sweep (stems like `prefill_in<L>`):
+  - prefill sweep (profile_names like `prefill_in<L>`):
       one row per input_len.
 
 Usage:
@@ -31,13 +31,13 @@ CAT_LABELS = {
 }
 
 
-def parse_decode(stem: str) -> tuple[int, int] | None:
-    m = re.match(r"decode_bs(\d+)_out(\d+)$", stem)
+def parse_decode(profile_name: str) -> tuple[int, int] | None:
+    m = re.match(r"decode_bs(\d+)_out(\d+)$", profile_name)
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def parse_prefill(stem: str) -> int | None:
-    m = re.match(r"prefill_in(\d+)$", stem)
+def parse_prefill(profile_name: str) -> int | None:
+    m = re.match(r"prefill_in(\d+)$", profile_name)
     return int(m.group(1)) if m else None
 
 
@@ -56,19 +56,19 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
     if not profiles:
         sys.exit(f"ERROR: no .nsys-rep files in {scan_dir}")
 
-    stems = [p.stem for p in profiles]
-    is_decode = any(s.startswith("decode") for s in stems)
-    is_prefill = any(s.startswith("prefill") for s in stems)
+    profile_names = [p.stem for p in profiles]
+    is_decode = any(s.startswith("decode") for s in profile_names)
+    is_prefill = any(s.startswith("prefill") for s in profile_names)
     if is_decode and is_prefill:
         sys.exit("ERROR: scan dir mixes decode and prefill profiles")
     mode = "decode" if is_decode else "prefill"
 
     rows: list[dict] = []
     for p in profiles:
-        stem = p.stem
-        bd_path = ROOT / "out" / stem / "breakdown.json"
+        profile_name = p.stem
+        bd_path = ROOT / "out" / profile_name / "breakdown.json"
         if not bd_path.exists():
-            print(f"# WARN: no breakdown.json for {stem} (pipeline failed?)",
+            print(f"# WARN: no breakdown.json for {profile_name} (pipeline failed?)",
                   file=sys.stderr)
             continue
         bd = json.loads(bd_path.read_text())
@@ -76,7 +76,7 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
         cats_us = categorize(totals_us)
         total_us = bd["sum_labeled_us"]
         row = {
-            "stem": stem,
+            "profile_name": profile_name,
             "total_ms": total_us / 1000.0,
             "attn_ms":   cats_us["Attention"] / 1000.0,
             "ffn_ms":    cats_us["FFN"] / 1000.0,
@@ -85,11 +85,11 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
             "attn_score_ms": totals_us.get("attn_score", 0.0) / 1000.0,
         }
         if mode == "decode":
-            parsed = parse_decode(stem)
+            parsed = parse_decode(profile_name)
             if parsed:
                 row["batch_size"], row["output_len"] = parsed
         else:
-            il = parse_prefill(stem)
+            il = parse_prefill(profile_name)
             if il is not None:
                 row["input_len"] = il
         rows.append(row)

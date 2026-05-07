@@ -4,7 +4,7 @@
 # For each input_len we:
 #   1. capture an nsys profile (one prefill run, output_len=1);
 #   2. run the analysis pipeline (run_pipeline.sh) on the freshly-written
-#      .nsys-rep to get a per-iter latency breakdown in out/<stem>/.
+#      .nsys-rep to get a per-iter latency breakdown in out/<profile_name>/.
 #
 # A pipeline failure on a single profile does NOT abort the sweep -- we
 # log the failure and continue, then summarize whatever succeeded at the

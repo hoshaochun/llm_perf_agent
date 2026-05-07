@@ -29,8 +29,8 @@ CATEGORY_GROUPING = {
 }
 
 
-def aggregate(stem: str) -> dict:
-    out_dir = ROOT / "out" / stem
+def aggregate(profile_name: str) -> dict:
+    out_dir = ROOT / "out" / profile_name
     canonical = json.loads((out_dir / "canonical.json").read_text())
     seg = json.loads((out_dir / "segmented.json").read_text())
     lmh = json.loads((out_dir / "lm_head.json").read_text())
@@ -53,7 +53,7 @@ def aggregate(stem: str) -> dict:
     totals_us["lm_head"] += float(lmh["lm_head_dur_us"])
 
     return {
-        "stem": stem,
+        "profile_name": profile_name,
         "mode": seg["mode"],
         "rep_iter_index": seg["rep_iter_index"],
         "num_layers": int(seg["num_layers"]),
@@ -71,10 +71,10 @@ def aggregate(stem: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("stem", help="profile stem under out/")
+    ap.add_argument("profile_name", help="profile name under out/")
     args = ap.parse_args()
-    agg = aggregate(args.stem)
-    out_path = ROOT / "out" / args.stem / "breakdown.json"
+    agg = aggregate(args.profile_name)
+    out_path = ROOT / "out" / args.profile_name / "breakdown.json"
     out_path.write_text(json.dumps(agg, indent=2))
     print(f"-> wrote {out_path}")
     return 0

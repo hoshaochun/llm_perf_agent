@@ -13,7 +13,7 @@ and compute:
 This exposes how attention compute scales with KV-cache size as the
 decode position grows.
 
-Output: `out/<stem>/decode_position_scan.json`.
+Output: `out/<profile_name>/decode_position_scan.json`.
 """
 from __future__ import annotations
 
@@ -31,13 +31,13 @@ PREFILL_ITERS_TO_SKIP = 5
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("stem")
+    ap.add_argument("profile_name")
     ap.add_argument("--max-pow2", type=int, default=12,
                     help="largest power-of-2 decode position to scan "
                          "(default 12 = position 4096)")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.stem
+    out_dir = ROOT / "out" / args.profile_name
     canonical = json.loads((out_dir / "canonical.json").read_text())
     seg = json.loads((out_dir / "segmented.json").read_text())
     flow = pd.read_parquet(out_dir / "kernel_flow.parquet").reset_index(drop=True)
@@ -80,7 +80,7 @@ def main() -> int:
         })
 
     out_obj = {
-        "stem": args.stem,
+        "profile_name": args.profile_name,
         "prefill_iters_to_skip": PREFILL_ITERS_TO_SKIP,
         "attn_kernel_names": sorted(attn_kernel_names),
         "rows": rows,

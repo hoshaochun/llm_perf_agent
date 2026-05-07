@@ -30,8 +30,8 @@
 #   3. latency breakdown grouped into Attention / FFN / LM head / Other
 #   4. (when <model> given) actual vs theoretical roofline table
 #
-# Intermediate artefacts written to out/<stem>/ ; full logs in
-# out/<stem>/pipeline.log.
+# Intermediate artefacts written to out/<profile_name>/ ; full logs in
+# out/<profile_name>/pipeline.log.
 set -euo pipefail
 
 usage() {
@@ -57,8 +57,8 @@ cd "$ROOT"
 
 # Resolve absolute path so extract_kernel_flow.py can find it.
 PROFILE_ABS="$(cd "$(dirname "$PROFILE")" && pwd)/$(basename "$PROFILE")"
-STEM="$(basename "$PROFILE" .nsys-rep)"
-OUT_DIR="out/$STEM"
+PROFILE_NAME="$(basename "$PROFILE" .nsys-rep)"
+OUT_DIR="out/$PROFILE_NAME"
 mkdir -p "$OUT_DIR"
 LOG="$OUT_DIR/pipeline.log"
 : > "$LOG"
@@ -85,24 +85,24 @@ echo
 run_stage "[1/5] extract kernel flow" \
     uv run python analyze/extract_kernel_flow.py "$PROFILE_ABS"
 run_stage "[2/5] LLM identifies canonical layer pattern" \
-    uv run python analyze/find_canonical_layer.py "$STEM"
+    uv run python analyze/find_canonical_layer.py "$PROFILE_NAME"
 run_stage "[3/5] segment iters using canonical pattern" \
-    uv run python analyze/segment_iters.py "$STEM" \
+    uv run python analyze/segment_iters.py "$PROFILE_NAME" \
         --mode "$MODE" --num-layers "$NUM_LAYERS"
 run_stage "[4/5] LLM identifies lm_head" \
-    uv run python analyze/find_lm_head.py "$STEM"
+    uv run python analyze/find_lm_head.py "$PROFILE_NAME"
 run_stage "[5/5] aggregate latency breakdown" \
-    uv run python analyze/aggregate_breakdown.py "$STEM"
+    uv run python analyze/aggregate_breakdown.py "$PROFILE_NAME"
 
 if [[ -n "$MODEL" ]]; then
     run_stage "[+] theoretical roofline analysis" \
-        uv run python theoretical/compare.py "$STEM" \
+        uv run python theoretical/compare.py "$PROFILE_NAME" \
             --model "$MODEL" --gpu "$GPU"
 fi
 
 if [[ "$MODE" == "decode" ]]; then
     run_stage "[+] decode-position attention scan" \
-        uv run python analyze/decode_position_scan.py "$STEM"
+        uv run python analyze/decode_position_scan.py "$PROFILE_NAME"
 fi
 
 # ----------------------- final structured output ----------------------------
@@ -110,8 +110,8 @@ uv run python - <<PY
 import json
 from pathlib import Path
 
-stem = "$STEM"
-out = Path("out") / stem
+profile_name = "$PROFILE_NAME"
+out = Path("out") / profile_name
 canonical = json.loads((out / "canonical.json").read_text())
 seg = json.loads((out / "segmented.json").read_text())
 lmh = json.loads((out / "lm_head.json").read_text())
@@ -220,7 +220,7 @@ if [[ "$MODE" == "decode" ]]; then
 import json
 from pathlib import Path
 scan = json.loads(
-    (Path("out") / "$STEM" / "decode_position_scan.json").read_text()
+    (Path("out") / "$PROFILE_NAME" / "decode_position_scan.json").read_text()
 )
 print()
 print("=" * 78)

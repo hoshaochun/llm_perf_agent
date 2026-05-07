@@ -2,7 +2,7 @@
 
 Stage 4 of the pipeline.
 
-Reads `out/<stem>/segmented.json` and sends two slices to the LLM:
+Reads `out/<profile_name>/segmented.json` and sends two slices to the LLM:
   - `last_layer`: the P kernels of the rep iter's FINAL transformer
                   layer (provided as context so the LLM knows what
                   the layer's tail kernels look like).
@@ -14,7 +14,7 @@ The LLM identifies which kernel in `epi_prologue` is the lm_head -- the
 single largest GEMM in the epilogue, which projects the last hidden
 state to vocabulary logits.
 
-Output: `out/<stem>/lm_head.json`.
+Output: `out/<profile_name>/lm_head.json`.
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ Output STRICT JSON ONLY with this schema:
 
 def build_user_prompt(seg: dict) -> str:
     return (
-        f"profile_stem = {seg['profile_stem']!r}, "
+        f"profile_name = {seg['profile_name']!r}, "
         f"mode = {seg['mode']}, "
         f"num_layers = {seg['num_layers']}, "
         f"period = {seg['period']}, "
@@ -96,10 +96,10 @@ def build_user_prompt(seg: dict) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("stem")
+    ap.add_argument("profile_name")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.stem
+    out_dir = ROOT / "out" / args.profile_name
     seg = json.loads((out_dir / "segmented.json").read_text())
 
     cfg = LLMConfig.from_env()
@@ -127,7 +127,7 @@ def main() -> int:
               file=sys.stderr)
 
     out_obj = {
-        "profile_stem": args.stem,
+        "profile_name": args.profile_name,
         "lm_head_i": int(lm_i),
         "lm_head_name": truth["name"],
         "lm_head_dur_us": float(truth["dur_us"]),

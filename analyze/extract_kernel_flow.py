@@ -8,7 +8,7 @@ Steps:
   2. Identify the dominant compute stream (highest cumulative kernel time).
   3. Pull the ordered kernel timeline on that stream, joined to short and
      demangled names.
-  4. Persist to out/<profile-stem>/kernel_flow.parquet and print a summary.
+  4. Persist to out/<profile-profile_name>/kernel_flow.parquet and print a summary.
 
 Output columns: start, end, dur_ns, short_name, demangled_name.
 Rows are in execution order on the dominant stream.
@@ -111,7 +111,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("profile", type=Path, help="path to a .nsys-rep file")
     ap.add_argument("--out-dir", type=Path, default=None,
-                    help="output directory (default: out/<profile-stem>/)")
+                    help="output directory (default: out/<profile-profile_name>/)")
     args = ap.parse_args()
 
     profile = args.profile.resolve()

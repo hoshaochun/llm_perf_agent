@@ -2,7 +2,7 @@
 
 Stage 3 of the pipeline.
 
-Reads `out/<stem>/kernel_flow.parquet` and `out/<stem>/canonical.json`,
+Reads `out/<profile_name>/kernel_flow.parquet` and `out/<profile_name>/canonical.json`,
 and segments the full trace using the canonical layer pattern as a
 sliding-window template.
 
@@ -103,7 +103,7 @@ def group_into_iters(matches: np.ndarray, period: int, num_layers: int
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("stem")
+    ap.add_argument("profile_name")
     ap.add_argument("--mode", required=True, choices=("prefill", "decode"))
     ap.add_argument("--num-layers", type=int, required=True)
     ap.add_argument("--rep-iter", type=int, default=None,
@@ -112,7 +112,7 @@ def main() -> int:
                          "0 for prefill)")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.stem
+    out_dir = ROOT / "out" / args.profile_name
     flow = pd.read_parquet(out_dir / "kernel_flow.parquet").reset_index(drop=True)
     canonical = json.loads((out_dir / "canonical.json").read_text())
     period = int(canonical["period"])
@@ -185,7 +185,7 @@ def main() -> int:
         })
 
     out_obj = {
-        "profile_stem": args.stem,
+        "profile_name": args.profile_name,
         "mode": args.mode,
         "num_layers": args.num_layers,
         "period": period,

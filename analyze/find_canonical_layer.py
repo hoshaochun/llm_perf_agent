@@ -2,7 +2,7 @@
 
 Stage 2 of the pipeline.
 
-Reads `out/<stem>/kernel_flow.parquet` and sends ~100 consecutive kernels
+Reads `out/<profile_name>/kernel_flow.parquet` and sends ~100 consecutive kernels
 from a steady-state region of the trace (default: trace[1000:1100], or
 trace[len/4:len/4+100] for shorter traces) to the LLM.  The LLM returns:
 
@@ -12,7 +12,7 @@ trace[len/4:len/4+100] for shorter traces) to the LLM.  The LLM returns:
     the last residual / FFN-down kernel before the next layer's
     pre-attn norm.
 
-Output: `out/<stem>/canonical.json`.
+Output: `out/<profile_name>/canonical.json`.
 """
 from __future__ import annotations
 
@@ -146,7 +146,7 @@ def validate(result: dict) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("stem", help="profile stem under out/")
+    ap.add_argument("profile_name", help="profile name under out/")
     ap.add_argument("--sample-offset", type=int, default=None,
                     help="trace index where the 100-kernel sample starts "
                          "(default: centered on the trace)")
@@ -155,7 +155,7 @@ def main() -> int:
                          "(default 100)")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.stem
+    out_dir = ROOT / "out" / args.profile_name
     flow_path = out_dir / "kernel_flow.parquet"
     if not flow_path.exists():
         print(f"ERROR: {flow_path} not found", file=sys.stderr)
@@ -200,7 +200,7 @@ def main() -> int:
         return 1
 
     out_obj = {
-        "profile_stem": args.stem,
+        "profile_name": args.profile_name,
         "sample_offset": offset,
         "sample_size": len(sample),
         "period": int(result["period"]),

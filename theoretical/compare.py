@@ -1,7 +1,7 @@
 """Compute roofline (theoretical) latency per operation and compare to actual.
 
-Reads `out/<stem>/breakdown.json` (actual durations from the analysis
-pipeline) and `out/<stem>/segmented.json` (rep-iter metadata), then uses
+Reads `out/<profile_name>/breakdown.json` (actual durations from the analysis
+pipeline) and `out/<profile_name>/segmented.json` (rep-iter metadata), then uses
 `theoretical.predictor` to compute the theoretical bound for each
 operation under the corresponding workload (model + GPU + batch size +
 sequence length).
@@ -15,11 +15,11 @@ The output table shows, per labelled operation:
   - actual/theor ratio  -- 1.0x = at theoretical peak; > 1 = slower than peak
 
 Usage:
-    uv run python theoretical/compare.py <stem> \\
+    uv run python theoretical/compare.py <profile_name> \\
         --model <model-name> [--gpu <gpu-name>]
 
 Workload params (batch_size, input_len, decode_pos) are auto-derived
-from the stem name (`prefill_in<L>`, `decode_bs<B>_out<O>`) and from
+from the profile_name name (`prefill_in<L>`, `decode_bs<B>_out<O>`) and from
 `segmented.json` (decode_pos = rep_iter_index); they can be overridden
 on the CLI.
 """
@@ -39,11 +39,8 @@ from configs.hw_specs import PRESET_GPUS
 from configs.model_specs import PRESET_MODELS
 from theoretical.predictor import (
     Request,
-    add_latency_dicts,
-    default_latency_dict,
+    estimate_forward_latency,
     expert_latency_cache,
-    matmul_latency,
-    transformer_latency,
 )
 
 # Match the alias table in profile/max_output_len.py so users can pass
@@ -79,13 +76,13 @@ def resolve_gpu(name: str):
     return PRESET_GPUS[name]
 
 
-def parse_decode_stem(stem: str) -> tuple[int, int] | None:
-    m = re.match(r"decode_bs(\d+)_out(\d+)$", stem)
+def parse_decode_name(profile_name: str) -> tuple[int, int] | None:
+    m = re.match(r"decode_bs(\d+)_out(\d+)$", profile_name)
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def parse_prefill_stem(stem: str) -> int | None:
-    m = re.match(r"prefill_in(\d+)$", stem)
+def parse_prefill_name(profile_name: str) -> int | None:
+    m = re.match(r"prefill_in(\d+)$", profile_name)
     return int(m.group(1)) if m else None
 
 
@@ -112,36 +109,28 @@ def build_requests(mode: str, batch_size: int, input_len: int,
 
 def compute_theoretical(requests: list[Request], model, gpu) -> dict:
     """Roofline latency per op, summed across all N layers + lm_head."""
-    total = default_latency_dict()
-    for layer_idx in range(model.n_layers):
-        layer = transformer_latency(requests, layer_idx, None, gpu, model)
-        add_latency_dicts(total, layer)
-    total["llm_head"] = matmul_latency(
-        len(requests), model.hidden_size, model.vocab_size,
-        None, gpu, model.model_orig_dtype, model.activation_dtype,
-    )
-    return total
+    return estimate_forward_latency(requests, None, gpu, model)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("stem", help="profile stem under out/")
+    ap.add_argument("profile_name", help="profile name under out/")
     ap.add_argument("--model", required=True,
                     help="preset model name (see configs/model_specs.py)")
     ap.add_argument("--gpu", default="4090",
                     help="preset gpu name (see configs/hw_specs.py)")
     ap.add_argument("--batch-size", type=int, default=None,
-                    help="override batch size (default: derived from stem)")
+                    help="override batch size (default: derived from profile_name)")
     ap.add_argument("--input-len", type=int, default=None,
                     help="prefill: prompt length; decode: prompt length "
                          "before generation (default: 1 for vllm bench decode, "
-                         "derived from stem for prefill)")
+                         "derived from profile_name for prefill)")
     ap.add_argument("--decode-pos", type=int, default=None,
                     help="decode-only: 1-indexed token position to model "
                          "(default: rep_iter_index from segmented.json)")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.stem
+    out_dir = ROOT / "out" / args.profile_name
     seg_path = out_dir / "segmented.json"
     bd_path = out_dir / "breakdown.json"
     if not seg_path.exists() or not bd_path.exists():
@@ -151,15 +140,15 @@ def main() -> int:
     bd = json.loads(bd_path.read_text())
     mode = seg["mode"]
 
-    # Workload params: CLI > stem-name autoderive > sensible fallback.
+    # Workload params: CLI > profile_name-name autoderive > sensible fallback.
     if mode == "prefill":
-        derived_input = parse_prefill_stem(args.stem)
+        derived_input = parse_prefill_name(args.profile_name)
         batch_size = args.batch_size if args.batch_size is not None else 1
         input_len = (args.input_len if args.input_len is not None
                      else (derived_input if derived_input is not None else 1))
         decode_pos = 1
     else:
-        derived = parse_decode_stem(args.stem)
+        derived = parse_decode_name(args.profile_name)
         batch_size = (args.batch_size if args.batch_size is not None
                       else (derived[0] if derived is not None else 1))
         input_len = args.input_len if args.input_len is not None else 1
@@ -169,7 +158,7 @@ def main() -> int:
     model = resolve_model(args.model)
     gpu = resolve_gpu(args.gpu)
 
-    print(f"# stem        = {args.stem}")
+    print(f"# profile_name        = {args.profile_name}")
     print(f"# mode        = {mode}")
     print(f"# model       = {model.name}  ({model.n_layers} layers)")
     print(f"# gpu         = {gpu.name}")
@@ -233,7 +222,7 @@ def main() -> int:
           f"{'':>9}  {'':>9}  {'':>7}  {ratio_total:>11.2f}x")
 
     out_obj = {
-        "stem": args.stem,
+        "profile_name": args.profile_name,
         "mode": mode,
         "gpu": gpu.name,
         "model": model.name,

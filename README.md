@@ -26,7 +26,7 @@ Qwen3-Coder-30B-MoE, gpt-oss-20b).
 [profile/]  bench_prefill.sh / bench_decode.sh
                 │   nsys profile vllm bench latency …
                 ▼
-         profile/results/<sweep>/<stem>.nsys-rep
+         profile/results/<sweep>/<profile_name>.nsys-rep
                 │
                 ▼
 [analyze/]  run_pipeline.sh  (one nsys-rep → per-op latency breakdown)
@@ -37,7 +37,7 @@ Qwen3-Coder-30B-MoE, gpt-oss-20b).
    5. aggregate_breakdown.py   Σ per-label durations across N layers + lm_head
                 │
                 ▼
-         out/<stem>/breakdown.json
+         out/<profile_name>/breakdown.json
                 │
                 ▼
 [theoretical/]  compare.py
@@ -94,7 +94,7 @@ per-category latency vs the swept variable.
 ## Outputs (per profile)
 
 ```
-out/<stem>/
+out/<profile_name>/
 ├── kernel_flow.parquet         # ordered kernel timeline on the dominant stream
 ├── canonical.json              # canonical layer pattern: P kernels in natural order
 ├── segmented.json              # rep iter's layer-loop + last-layer + epi+prologue
