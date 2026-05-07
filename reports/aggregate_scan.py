@@ -1,12 +1,19 @@
 """Aggregate latency breakdowns across a sweep of profiles.
 
 Reads every `*.nsys-rep` in <scan_dir> and looks up its
-`out/<profile_name>/breakdown.json`.  Prints a cross-profile table:
+`out/<profile_name>/breakdown.json` (and theoretical_latency.json when
+present), then prints two cross-profile tables:
 
-  - decode sweep (profile_names like `decode_bs<B>_out<O>`):
-      one row per batch_size with iter-latency + per-category breakdown.
-  - prefill sweep (profile_names like `prefill_in<L>`):
-      one row per input_len.
+  Section 1: ITERATION LATENCY (one row per profile)
+      end-to-end iter latency, theoretical bound, ratio, and the
+      identified bottleneck category + bound type (compute / memory).
+
+  Section 2: PER-CATEGORY BREAKDOWN (one row per profile)
+      for each of Attention / FFN / LM Head / Other:
+          actual ms / theoretical ms / actual÷theor / % of iter
+
+Theoretical figures come from `theoretical_latency.json`; if that file
+is missing for a profile the theor + ratio cells fall back to `-`.
 
 Usage:
     python reports/aggregate_scan.py <scan_dir>
@@ -29,6 +36,7 @@ CAT_LABELS = {
     "FFN":       ["ffn_up_projection", "ffn_down_projection"],
     "LM Head":   ["lm_head"],
 }
+CATS = ["Attention", "FFN", "LM Head", "Other"]
 
 
 def parse_decode(profile_name: str) -> tuple[int, int] | None:
@@ -41,7 +49,8 @@ def parse_prefill(profile_name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def categorize(totals_us: dict[str, float]) -> dict:
+def categorize_actual(totals_us: dict[str, float]) -> dict[str, float]:
+    """Sum actual durations into the four reporting categories."""
     used: set[str] = set()
     out: dict[str, float] = {}
     for cat, labels in CAT_LABELS.items():
@@ -49,6 +58,48 @@ def categorize(totals_us: dict[str, float]) -> dict:
         used.update(labels)
     out["Other"] = sum(v for k, v in totals_us.items() if k not in used)
     return out
+
+
+def categorize_theor(theor_rows: list[dict]
+                     ) -> tuple[dict[str, float | None], dict[str, str | None]]:
+    """Sum theoretical bounds + tag each category compute/memory-bound.
+
+    Returns (theor_us_per_cat, bound_kind_per_cat). 'Other' is always
+    (None, None) since the predictor doesn't model misc kernels.
+    """
+    by_label = {row["label"]: row for row in theor_rows}
+    theor_us = {cat: None for cat in CATS}
+    bound_kind = {cat: None for cat in CATS}
+    for cat, labels in CAT_LABELS.items():
+        t_us = 0.0
+        c_us = 0.0
+        m_us = 0.0
+        has = False
+        for lab in labels:
+            r = by_label.get(lab)
+            if r is None:
+                continue
+            t_us += float(r["theor_bound_us"])
+            c_us += float(r["theor_compute_us"])
+            m_us += float(r["theor_memory_us"])
+            has = True
+        if has:
+            theor_us[cat] = t_us
+            bound_kind[cat] = "compute" if c_us >= m_us else "memory"
+    return theor_us, bound_kind
+
+
+def find_bottleneck(cats_actual_ms: dict[str, float],
+                    cats_bound: dict[str, str | None],
+                    iter_actual_ms: float) -> str:
+    """Bottleneck = category with the highest actual ms (= where time is
+    spent), qualified by its compute/memory bound type."""
+    cat = max(cats_actual_ms, key=lambda c: cats_actual_ms[c])
+    pct = (cats_actual_ms[cat] / iter_actual_ms * 100) if iter_actual_ms > 0 else 0.0
+    bound = cats_bound.get(cat)
+    if bound:
+        return f"{cat} ({bound}-bound, {pct:.1f}%)"
+    return f"{cat} ({pct:.1f}%)"
 
 
 def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
@@ -72,17 +123,45 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
                   file=sys.stderr)
             continue
         bd = json.loads(bd_path.read_text())
+
+        th_path = ROOT / "out" / profile_name / "theoretical_latency.json"
+        th = json.loads(th_path.read_text()) if th_path.exists() else None
+
         totals_us = bd["totals_us"]
-        cats_us = categorize(totals_us)
-        total_us = bd["sum_labeled_us"]
+        iter_actual_us = float(bd["sum_labeled_us"])
+        cats_actual_us = categorize_actual(totals_us)
+
+        if th is not None:
+            cats_theor_us, cats_bound = categorize_theor(th["rows"])
+            # iter theoretical = sum of categorical theoretical bounds + the
+            # actual time spent in 'Other' (which we don't roofline).  This
+            # gives "fastest the iter could plausibly run" assuming misc
+            # overhead is unavoidable.
+            iter_theor_us = (
+                sum(v for v in cats_theor_us.values() if v is not None)
+                + cats_actual_us["Other"]
+            )
+        else:
+            cats_theor_us = {cat: None for cat in CATS}
+            cats_bound    = {cat: None for cat in CATS}
+            iter_theor_us = None
+
+        bottleneck = find_bottleneck(
+            {c: v / 1000.0 for c, v in cats_actual_us.items()},
+            cats_bound,
+            iter_actual_us / 1000.0,
+        )
+
         row = {
-            "profile_name": profile_name,
-            "total_ms": total_us / 1000.0,
-            "attn_ms":   cats_us["Attention"] / 1000.0,
-            "ffn_ms":    cats_us["FFN"] / 1000.0,
-            "lmh_ms":    cats_us["LM Head"] / 1000.0,
-            "other_ms":  cats_us["Other"] / 1000.0,
-            "attn_score_ms": totals_us.get("attn_score", 0.0) / 1000.0,
+            "profile_name":   profile_name,
+            "iter_actual_ms": iter_actual_us / 1000.0,
+            "iter_theor_ms":  (iter_theor_us / 1000.0) if iter_theor_us else None,
+            "cats_actual_ms": {c: v / 1000.0 for c, v in cats_actual_us.items()},
+            "cats_theor_ms":  {c: (v / 1000.0 if v else None)
+                               for c, v in cats_theor_us.items()},
+            "cats_bound":     cats_bound,
+            "bottleneck":     bottleneck,
+            "has_theor":      th is not None,
         }
         if mode == "decode":
             parsed = parse_decode(profile_name)
@@ -94,54 +173,89 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
                 row["input_len"] = il
         rows.append(row)
 
-    if mode == "decode":
-        rows.sort(key=lambda r: r.get("batch_size", 0))
-    else:
-        rows.sort(key=lambda r: r.get("input_len", 0))
+    rows.sort(key=lambda r: r.get("batch_size" if mode == "decode" else "input_len", 0))
     return mode, rows
 
 
-def fmt_pct(num_ms: float, denom_ms: float) -> str:
-    return f"{(num_ms / denom_ms * 100):>5.1f}%" if denom_ms > 0 else "    -"
+# --------------------------------------------------------------------------
+# Printing
+# --------------------------------------------------------------------------
 
 
-def print_decode_table(rows: list[dict]) -> None:
-    print("=" * 102)
-    print(" CROSS-PROFILE LATENCY SUMMARY  (decode sweep)")
-    print("=" * 102)
-    print(f" {'batch':>5}  {'out_len':>7}  {'iter (ms)':>10}  "
-          f"{'attn (ms)':>10}  {'ffn (ms)':>10}  {'lmh (ms)':>10}  "
-          f"{'other (ms)':>11}  {'attn%':>6}  {'ffn%':>6}  {'lmh%':>6}")
-    print(" " + "-" * 100)
+def _row_index(row: dict, mode: str) -> str:
+    if mode == "decode":
+        bs = row.get("batch_size", "?")
+        ol = row.get("output_len", "?")
+        return f" {bs:>5}  {ol:>7}"
+    return f" {row.get('input_len', '?'):>5}"
+
+
+def _index_header(mode: str) -> str:
+    if mode == "decode":
+        return f" {'batch':>5}  {'out_len':>7}"
+    return f" {'input':>5}"
+
+
+def print_iter_table(rows: list[dict], mode: str) -> None:
+    title = f"{mode.upper()} SWEEP — ITERATION LATENCY  (actual vs theoretical roofline)"
+    print()
+    print("=" * 100)
+    print(f" {title}")
+    print("=" * 100)
+    head_idx = _index_header(mode)
+    print(f"{head_idx}  {'iter (ms)':>10}  {'theor (ms)':>10}  "
+          f"{'a/t':>7}  bottleneck")
+    print(" " + "-" * 98)
     for r in rows:
-        bs = r.get("batch_size", "?")
-        ol = r.get("output_len", "?")
-        t = r["total_ms"]
-        print(f" {bs:>5}  {ol:>7}  {t:>10.3f}  "
-              f"{r['attn_ms']:>10.3f}  {r['ffn_ms']:>10.3f}  "
-              f"{r['lmh_ms']:>10.3f}  {r['other_ms']:>11.3f}  "
-              f"{fmt_pct(r['attn_ms'], t)}  "
-              f"{fmt_pct(r['ffn_ms'], t)}  "
-              f"{fmt_pct(r['lmh_ms'], t)}")
+        idx = _row_index(r, mode)
+        a = r["iter_actual_ms"]
+        t = r["iter_theor_ms"]
+        if t and t > 0:
+            t_str = f"{t:>10.3f}"
+            r_str = f"{a/t:>5.2f}x"
+        else:
+            t_str = f"{'-':>10}"
+            r_str = f"{'-':>6}"
+        print(f"{idx}  {a:>10.3f}  {t_str}  {r_str}  {r['bottleneck']}")
 
 
-def print_prefill_table(rows: list[dict]) -> None:
-    print("=" * 92)
-    print(" CROSS-PROFILE LATENCY SUMMARY  (prefill sweep)")
-    print("=" * 92)
-    print(f" {'input':>5}  {'iter (ms)':>10}  "
-          f"{'attn (ms)':>10}  {'ffn (ms)':>10}  {'lmh (ms)':>10}  "
-          f"{'other (ms)':>11}  {'attn%':>6}  {'ffn%':>6}  {'lmh%':>6}")
-    print(" " + "-" * 90)
+def _fmt_cat_cell(act_ms: float, theor_ms: float | None,
+                  iter_ms: float) -> str:
+    pct = (act_ms / iter_ms * 100) if iter_ms > 0 else 0.0
+    if theor_ms is not None and theor_ms > 0:
+        ratio = act_ms / theor_ms
+        return f"{act_ms:>7.2f} {theor_ms:>7.2f} {ratio:>4.2f}x {pct:>5.1f}%"
+    return f"{act_ms:>7.2f} {'-':>7} {'-':>5} {pct:>5.1f}%"
+
+
+def print_category_table(rows: list[dict], mode: str) -> None:
+    title = (f"{mode.upper()} SWEEP — PER-CATEGORY BREAKDOWN  "
+             "(actual ms / theor ms / actual÷theor / % of iter)")
+    print()
+    print("=" * 132)
+    print(f" {title}")
+    print("=" * 132)
+    head_idx = _index_header(mode)
+    cell_w = 28
+    cat_hdr = "  ".join(f"{cat:^{cell_w}}" for cat in CATS)
+    print(f"{head_idx}  {cat_hdr}")
+    pad = " " * len(head_idx)
+    sub = "  ".join(
+        f"{'act':>7} {'theor':>7} {'r':>5} {'%':>6}" for _ in CATS
+    )
+    print(f"{pad}  {sub}")
+    print(" " + "-" * 130)
     for r in rows:
-        il = r.get("input_len", "?")
-        t = r["total_ms"]
-        print(f" {il:>5}  {t:>10.3f}  "
-              f"{r['attn_ms']:>10.3f}  {r['ffn_ms']:>10.3f}  "
-              f"{r['lmh_ms']:>10.3f}  {r['other_ms']:>11.3f}  "
-              f"{fmt_pct(r['attn_ms'], t)}  "
-              f"{fmt_pct(r['ffn_ms'], t)}  "
-              f"{fmt_pct(r['lmh_ms'], t)}")
+        idx = _row_index(r, mode)
+        iter_ms = r["iter_actual_ms"]
+        cells = []
+        for cat in CATS:
+            cells.append(_fmt_cat_cell(
+                r["cats_actual_ms"][cat],
+                r["cats_theor_ms"][cat],
+                iter_ms,
+            ))
+        print(f"{idx}  " + "  ".join(cells))
 
 
 def main() -> int:
@@ -157,13 +271,13 @@ def main() -> int:
     if not rows:
         sys.exit("ERROR: no rows to summarize (no breakdown.json files found)")
 
+    print_iter_table(rows, mode)
+    print_category_table(rows, mode)
+
     print()
-    if mode == "decode":
-        print_decode_table(rows)
-    else:
-        print_prefill_table(rows)
-    print()
-    print(f" Source: {scan_dir}/  ({len(rows)} profiles)")
+    n_with_theor = sum(1 for r in rows if r["has_theor"])
+    print(f" Source: {scan_dir}/  ({len(rows)} profiles, "
+          f"{n_with_theor} with theoretical roofline)")
     return 0
 
 
