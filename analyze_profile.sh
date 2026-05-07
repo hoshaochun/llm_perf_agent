@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Step 2 of the workflow: analyze ONE Nsight Systems profile -> per-layer
-# kernel labels + latency breakdown (+ optional theoretical comparison).
+# kernel labels + actual latency breakdown.
 #
 # Usage:
-#   ./analyze_profile.sh <profile.nsys-rep> <prefill|decode> <num_layers> \
-#                        [<model> [<gpu>]]
+#   ./analyze_profile.sh <profile.nsys-rep> <prefill|decode> <num_layers>
 # Example:
 #   ./analyze_profile.sh profile/results/decode_example3.nsys-rep decode 28
 #   ./analyze_profile.sh profile/results/decode_scan/gpt-oss-20b/decode_bs1_out16384.nsys-rep \
-#                        decode 24 gpt-oss-20b 4090
+#                        decode 24
+#
+# This step ONLY measures the actual workload. Pair it with
+# compare_profile.sh (step 3) for the theoretical comparison.
 #
 # Pipeline stages:
 #   1. extract_kernel_flow.py    -- nsys-rep -> kernel_flow.parquet
@@ -20,15 +22,12 @@
 #   4. find_lm_head.py           -- LLM picks lm_head from rep iter's
 #                                   last_layer + epi+prologue
 #   5. aggregate_breakdown.py    -- sums per-label durations + lm_head
-#   [+] theoretical/compare.py   -- (when <model> given) actual vs roofline
-#                                   per operation
 #   [+] decode_position_scan.py  -- (decode mode) attn vs decode position
 #
 # Final output (printed to stdout):
 #   1. canonical layer pattern (per-position labels + mean duration)
 #   2. lm_head kernel + duration
 #   3. latency breakdown grouped into Attention / FFN / LM head / Other
-#   4. (when <model> given) actual vs theoretical roofline table
 #
 # Intermediate artefacts written to out/<profile_name>/ ; full logs in
 # out/<profile_name>/pipeline.log.
@@ -38,13 +37,11 @@ usage() {
     sed -n '3,28p' "$0" >&2
     exit 1
 }
-[[ $# -ge 3 && $# -le 5 ]] || usage
+[[ $# -eq 3 ]] || usage
 
 PROFILE="$1"
 MODE="$2"
 NUM_LAYERS="$3"
-MODEL="${4:-}"
-GPU="${5:-4090}"
 
 [[ -f "$PROFILE" ]] || { echo "ERROR: profile not found: $PROFILE" >&2; exit 1; }
 [[ "$MODE" == "prefill" || "$MODE" == "decode" ]] || {
@@ -62,6 +59,10 @@ OUT_DIR="out/$PROFILE_NAME"
 mkdir -p "$OUT_DIR"
 LOG="$OUT_DIR/pipeline.log"
 : > "$LOG"
+
+# Drop any stale theoretical output from a prior compare_profile.sh run
+# on this profile_name, so the final report only reflects this run.
+rm -f "$OUT_DIR/theoretical_latency.json"
 
 run_stage() {
     local label="$1"; shift
@@ -93,12 +94,6 @@ run_stage "[4/5] LLM identifies lm_head" \
     uv run python analyze/find_lm_head.py "$PROFILE_NAME"
 run_stage "[5/5] aggregate latency breakdown" \
     uv run python analyze/aggregate_breakdown.py "$PROFILE_NAME"
-
-if [[ -n "$MODEL" ]]; then
-    run_stage "[+] theoretical roofline analysis" \
-        uv run python theoretical/compare.py "$PROFILE_NAME" \
-            --model "$MODEL" --gpu "$GPU"
-fi
 
 if [[ "$MODE" == "decode" ]]; then
     run_stage "[+] decode-position attention scan" \
@@ -177,33 +172,6 @@ if other_labels:
 
 print(f"\n  {'Total labelled':<30s}  {grand_ms:>10,.3f} ms")
 
-theor_path = out / "theoretical_latency.json"
-if theor_path.exists():
-    th = json.loads(theor_path.read_text())
-    print()
-    print("=" * 102)
-    print(f" ACTUAL vs THEORETICAL  (gpu={th['gpu']}, model={th['model']}"
-          + (f", batch={th['batch_size']}, input_len={th['input_len']}"
-             + (f", decode_pos={th['decode_pos']}" if th.get('decode_pos') else "")
-             ) + ")")
-    print("=" * 102)
-    print(f" {'operation':<22}  {'actual (ms)':>11}  {'theor (ms)':>10}  "
-          f"{'compute':>9}  {'memory':>9}  {'bound':>7}  {'a/t':>7}")
-    print(" " + "-" * 100)
-    for r in th["rows"]:
-        print(f" {r['label']:<22}  "
-              f"{r['actual_us']/1000:>11.3f}  "
-              f"{r['theor_bound_us']/1000:>10.3f}  "
-              f"{r['theor_compute_us']/1000:>9.3f}  "
-              f"{r['theor_memory_us']/1000:>9.3f}  "
-              f"{r['bound_kind']:>7}  "
-              f"{r['ratio_actual_over_theor']:>6.2f}x")
-    print(" " + "-" * 100)
-    sa = th['sum_actual_ms']; st = th['sum_theor_ms']
-    print(f" {'TOTAL (these ops)':<22}  "
-          f"{sa:>11.3f}  {st:>10.3f}  {'':>9}  {'':>9}  {'':>7}  "
-          f"{(sa/st if st>0 else 0):>6.2f}x")
-
 print()
 print("=" * 78)
 print(f" Artefacts: {out}/")
@@ -211,8 +179,6 @@ print(f"   canonical.json              (LLM-identified layer pattern + labels)")
 print(f"   segmented.json              (rep iter's layer-loop + epi_prologue)")
 print(f"   lm_head.json                (LLM-identified lm_head kernel)")
 print(f"   breakdown.json              (latency totals by category)")
-if theor_path.exists():
-    print(f"   theoretical_latency.json   (actual vs roofline per op)")
 PY
 
 if [[ "$MODE" == "decode" ]]; then

@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# End-to-end performance-evaluation workflow.  Runs the three steps in
-# sequence:
+# End-to-end performance-evaluation workflow.  Three workflow steps plus
+# a cross-profile summary utility:
 #
 #   step 1 (profile)    bench_<mode>.sh
 #                       -> profile/results/<mode>_scan/<model>/*.nsys-rep
 #   step 2 (analyze)    analyze_profile.sh, looped over each .nsys-rep
-#                       -> out/<profile_name>/{breakdown,theoretical_latency,...}.json
-#   step 3 (summarize)  summarize_sweep.sh
+#                       -> out/<profile_name>/breakdown.json (+ canonical,
+#                          segmented, lm_head, decode_position_scan)
+#   step 3 (compare)    compare_profile.sh, looped over each .nsys-rep
+#                       -> out/<profile_name>/theoretical_latency.json
+#
+#   summary (utility)   summarize_sweep.sh
 #                       -> cross-profile latency table
 #
 # Usage:
@@ -19,12 +23,12 @@
 #   ./run_workflow.sh prefill -- 1 2 4 8 16 32 64                 # custom subset of input_lens
 #   ./run_workflow.sh prefill gpt-oss-20b 4090 -- 1 2 4 8 16      # everything overridden
 #
-# A failure in step 2 on a single profile is logged but does not abort
-# the workflow -- whatever succeeded is summarised in step 3.
+# Failures in step 2 or step 3 on a single profile are logged but do not
+# abort the workflow -- whatever succeeded is summarised at the end.
 set -uo pipefail
 
 usage() {
-    sed -n '3,21p' "$0" >&2
+    sed -n '3,28p' "$0" >&2
     exit 1
 }
 
@@ -64,25 +68,36 @@ sweep_dir="profile/results/${MODE}_scan/${MODEL}"
     exit 1
 }
 
-# -------- Step 2: per-profile analysis --------
-echo
-echo "==== Step 2: analyze each profile in $sweep_dir ===="
 shopt -s nullglob
 profiles=("$sweep_dir"/*.nsys-rep)
 if [[ ${#profiles[@]} -eq 0 ]]; then
     echo "ERROR: no .nsys-rep files in $sweep_dir" >&2
     exit 1
 fi
+
+# -------- Step 2: per-profile actual-latency analysis --------
+echo
+echo "==== Step 2: analyze each profile in $sweep_dir ===="
 for profile_path in "${profiles[@]}"; do
     echo
     echo "--- $(basename "$profile_path") ---"
-    if ! ./analyze_profile.sh "$profile_path" "$MODE" "$n_layers" \
-            "$MODEL" "$GPU"; then
+    if ! ./analyze_profile.sh "$profile_path" "$MODE" "$n_layers"; then
         echo "WARN: analyze_profile failed for $profile_path; continuing" >&2
     fi
 done
 
-# -------- Step 3: cross-profile summary --------
+# -------- Step 3: per-profile theoretical comparison --------
 echo
-echo "==== Step 3: summarize ===="
+echo "==== Step 3: compare each profile against theoretical bound ===="
+for profile_path in "${profiles[@]}"; do
+    echo
+    echo "--- $(basename "$profile_path") ---"
+    if ! ./compare_profile.sh "$profile_path" "$MODEL" "$GPU"; then
+        echo "WARN: compare_profile failed for $profile_path; continuing" >&2
+    fi
+done
+
+# -------- Cross-profile summary (utility) --------
+echo
+echo "==== Cross-profile summary ===="
 ./summarize_sweep.sh "$sweep_dir"
