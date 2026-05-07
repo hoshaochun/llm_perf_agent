@@ -56,7 +56,7 @@ echo "==========================================================================
 # -------- Step 1: profile sweep --------
 echo
 echo "==== Step 1: profiling ===="
-MODEL_NAME="$MODEL" "./bench_${MODE}.sh" "$@"
+"./bench_${MODE}.sh" "$MODEL" "$@"
 
 sweep_dir="profile/results/${MODE}_scan/${MODEL}"
 [[ -d "$sweep_dir" ]] || {

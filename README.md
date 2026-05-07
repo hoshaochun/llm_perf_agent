@@ -64,7 +64,7 @@ uv sync
 ./run_workflow.sh prefill gpt-oss-20b 4090 -- 1 2 4 8
 
 # 3b. Or run the steps individually.
-./bench_prefill.sh 1 2 4 8                               # step 1 only
+./bench_prefill.sh gpt-oss-20b 1 2 4 8                   # step 1 only
 ./analyze_profile.sh path/to/foo.nsys-rep prefill 24 \
                      gpt-oss-20b 4090                    # step 2 (one profile)
 ./summarize_sweep.sh profile/results/prefill_scan/gpt-oss-20b/  # step 3

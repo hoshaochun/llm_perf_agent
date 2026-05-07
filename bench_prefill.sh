@@ -7,20 +7,28 @@
 # This script ONLY profiles. Pair it with analyze_profile.sh (step 2) and
 # summarize_sweep.sh (step 3), or run all three via run_workflow.sh.
 #
-# Sweep variable: pass custom values as positional args, e.g.
-#   ./bench_prefill.sh 1 2 4 8 16 32 64
+# Usage:
+#   ./bench_prefill.sh <model_name> [input_len ...]
 #
-# Model: override via env var, e.g.
-#   MODEL_NAME=Qwen2.5-Coder-7B-Instruct ./bench_prefill.sh
+# Examples:
+#   ./bench_prefill.sh gpt-oss-20b                       # default sweep (1..8192)
+#   ./bench_prefill.sh gpt-oss-20b 1 2 4 8 16 32 64      # custom subset
+#   ./bench_prefill.sh Qwen2.5-Coder-7B-Instruct
+#
+# Model presets live in configs/model_specs.py; the alias table in
+# theoretical/compare.py / profile/max_output_len.py maps short names
+# (gpt-oss-20b, Qwen2.5-Coder-7B-Instruct, ...) to HuggingFace keys.
+# MODEL_HOME (default /mnt/llm_team/silicon_mind) can still be set via env.
 set -uo pipefail
 
+usage() {
+    sed -n '3,21p' "$0" >&2
+    exit 1
+}
+[[ $# -ge 1 ]] || usage
+
+model_name="$1"; shift
 model_home="${MODEL_HOME:-/mnt/llm_team/silicon_mind}"
-model_name="${MODEL_NAME:-gpt-oss-20b}"
-# Available presets in configs/model_specs.py (and the alias table in
-# theoretical/compare.py / profile/max_output_len.py):
-#   gpt-oss-20b
-#   Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit
-#   Qwen2.5-Coder-7B-Instruct
 
 repo_root="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_root"

@@ -8,12 +8,25 @@
 # This script ONLY profiles. Pair it with analyze_profile.sh (step 2) and
 # summarize_sweep.sh (step 3), or run all three via run_workflow.sh.
 #
-# Model: override via env var, e.g.
-#   MODEL_NAME=Qwen2.5-Coder-7B-Instruct ./bench_decode.sh
+# Usage:
+#   ./bench_decode.sh <model_name> [batch_size ...]
+#
+# Examples:
+#   ./bench_decode.sh gpt-oss-20b                        # default sweep (1..256)
+#   ./bench_decode.sh gpt-oss-20b 1 2 4 8                # custom subset
+#   ./bench_decode.sh Qwen2.5-Coder-7B-Instruct
+#
+# MODEL_HOME (default /mnt/llm_team/silicon_mind) can still be set via env.
 set -uo pipefail
 
+usage() {
+    sed -n '3,18p' "$0" >&2
+    exit 1
+}
+[[ $# -ge 1 ]] || usage
+
+model_name="$1"; shift
 model_home="${MODEL_HOME:-/mnt/llm_team/silicon_mind}"
-model_name="${MODEL_NAME:-gpt-oss-20b}"
 
 repo_root="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_root"
@@ -23,7 +36,11 @@ mkdir -p "$out_dir"
 echo "Model    : $model_name"
 echo "Out dir  : $out_dir"
 
-batch_sizes=(1 2 4 8 16 32 64 128 256)
+if [[ $# -gt 0 ]]; then
+    batch_sizes=("$@")
+else
+    batch_sizes=(1 2 4 8 16 32 64 128 256)
+fi
 max_output_len=16384
 
 for batch_size in "${batch_sizes[@]}"; do
