@@ -195,18 +195,39 @@ def attn_score_latency(
 
     for r in requests:
         n_token = r.cur_input_len
-        n_kv = min(n_token + r.kv_len, max_window_len)
+        K = r.kv_len            # KV-cache length BEFORE this batch's tokens
+        W = max_window_len
 
-        # flops
-        q_k_flops = 2 * n_token * n_kv * h
-        score_v_flops = 2 * n_kv * n_token * h
-        total_flops += q_k_flops + score_v_flops
+        # FLOPs under causal masking + sliding window.  Each query at
+        # chunk-position i (0..n_token-1) attends to min(W, K + i + 1)
+        # keys; sum that over all queries to get the (q,k) dot-product
+        # count.  Closed-form so we stay O(1) for very long prefills.
+        if W >= K + n_token:
+            # No sliding cap anywhere: pure causal triangle layered on
+            # top of the K already-cached tokens.
+            causal_pairs = n_token * K + n_token * (n_token + 1) // 2
+        elif W <= K:
+            # Every query is already past the window; each sees exactly W.
+            causal_pairs = n_token * W
+        else:
+            # Mixed: queries 0..i_star are uncapped (causal), the rest
+            # clipped at W.
+            i_star = W - K - 1
+            uncapped = (i_star + 1) * K + (i_star + 1) * (i_star + 2) // 2
+            capped   = (n_token - i_star - 1) * W
+            causal_pairs = uncapped + capped
+        # Q@K^T and Score@V each contribute 2 * causal_pairs * h FLOPs
+        # (where h = head_dim * n_attention_heads).
+        total_flops += 4 * causal_pairs * h
 
-        # bytes
-        read_q = n_token * h
+        # Bytes: union of unique keys/values read across this chunk.
+        # Without sliding: K + n_token; with sliding: n_token + W (the
+        # moving window's union length, +1 absorbed for a snug bound).
+        n_kv = min(K + n_token, W)
+        if K + n_token > W:
+            n_kv = n_token + W
+        read_q  = n_token * h
         read_kv = 2 * n_kv * h // g
-        if n_token + r.kv_len > max_window_len:
-            read_kv = 2 * (n_token + max_window_len) * h // g
         write_o = n_token * h
         total_bytes += a_byte * (read_q + read_kv + write_o)
 
