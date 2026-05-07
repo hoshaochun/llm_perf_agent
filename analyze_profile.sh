@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# End-to-end pipeline: an Nsight Systems profile -> per-layer kernel labels +
-# latency breakdown.
+# Step 2 of the workflow: analyze ONE Nsight Systems profile -> per-layer
+# kernel labels + latency breakdown (+ optional theoretical comparison).
 #
 # Usage:
-#   ./run_pipeline.sh <profile.nsys-rep> <prefill|decode> <num_layers> \
-#                     [<model> [<gpu>]]
+#   ./analyze_profile.sh <profile.nsys-rep> <prefill|decode> <num_layers> \
+#                        [<model> [<gpu>]]
 # Example:
-#   ./run_pipeline.sh perf_reports/decode_example3.nsys-rep decode 28
-#   ./run_pipeline.sh perf_reports/decode_bs1_out16384.nsys-rep decode 24 \
-#                     gpt-oss-20b 4090
+#   ./analyze_profile.sh profile/results/decode_example3.nsys-rep decode 28
+#   ./analyze_profile.sh profile/results/decode_scan/gpt-oss-20b/decode_bs1_out16384.nsys-rep \
+#                        decode 24 gpt-oss-20b 4090
 #
 # Pipeline stages:
 #   1. extract_kernel_flow.py    -- nsys-rep -> kernel_flow.parquet
@@ -20,7 +20,7 @@
 #   4. find_lm_head.py           -- LLM picks lm_head from rep iter's
 #                                   last_layer + epi+prologue
 #   5. aggregate_breakdown.py    -- sums per-label durations + lm_head
-#   [+] theoretical_latency.py   -- (when <model> given) actual vs roofline
+#   [+] theoretical/compare.py   -- (when <model> given) actual vs roofline
 #                                   per operation
 #   [+] decode_position_scan.py  -- (decode mode) attn vs decode position
 #

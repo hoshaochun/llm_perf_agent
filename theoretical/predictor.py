@@ -265,14 +265,37 @@ def transformer_latency(
     )
 
     # ---------------------------------------------------------
-    # Mixture of Experts (FFN)
+    # FFN  (dense: 1 GEMM each.  MoE: GGEMM over experts.)
     # ---------------------------------------------------------
-    if n_token in expert_latency_cache:
+    if model.n_experts <= 1:
+        # Dense FFN. SwiGLU-style: gate+up are usually fused into a single
+        # GEMM of width 2*intermediate_size, then activation, then down.
+        # 1. Up & Gate projection: hidden -> 2 * intermediate_size
+        latency["up_proj"] = matmul_latency(
+            n_token,
+            model.hidden_size,
+            model.intermediate_size * 2,
+            bench_data,
+            gpu,
+            model.ffn_weight_dtype,
+            model.activation_dtype,
+        )
+        # 2. Down projection: intermediate_size -> hidden
+        latency["down_proj"] = matmul_latency(
+            n_token,
+            model.intermediate_size,
+            model.hidden_size,
+            bench_data,
+            gpu,
+            model.ffn_weight_dtype,
+            model.activation_dtype,
+        )
+    elif n_token in expert_latency_cache:
         latency["up_proj"] = expert_latency_cache[n_token]["up_proj"]
         latency["down_proj"] = expert_latency_cache[n_token]["down_proj"]
 
     else:
-        # For now, we assume uniform distribution
+        # MoE FFN.  Assume uniform expert distribution.
         expert_list = [i for i in range(model.n_experts)]
         selected_experts = []
         for i in range(n_token):

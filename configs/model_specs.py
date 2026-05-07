@@ -381,5 +381,29 @@ PRESET_MODELS = {
         top_k=8,
         max_seq_len=262144,
     ),
+    # Dense Qwen2-class model (no MoE).  We model the FFN as a single
+    # "expert" with n_experts=1, top_k=1 so the predictor's GGEMM path
+    # collapses to the dense up/down GEMMs.  moe_intermediate_size mirrors
+    # intermediate_size since the predictor uses moe_intermediate_size for
+    # the FFN dim (gate+up are fused 2x).
+    "Qwen/Qwen2.5-Coder-7B-Instruct": ModelConfig(
+        name="Qwen/Qwen2.5-Coder-7B-Instruct",
+        model_orig_dtype="bf16",
+        ffn_weight_dtype="bf16",
+        attn_weight_dtype="bf16",
+        activation_dtype="bf16",
+        kv_cache_dtype="bf16",
+        n_layers=28,
+        hidden_size=3584,
+        vocab_size=152064,
+        n_attention_heads=28,
+        n_kv_heads=4,
+        head_dim=128,
+        intermediate_size=18944,
+        moe_intermediate_size=18944,
+        n_experts=1,
+        top_k=1,
+        max_seq_len=32768,
+    ),
 }
 

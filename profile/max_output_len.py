@@ -22,6 +22,7 @@ MODEL_NAME_ALIASES = {
     "gpt-oss-20b": "openai/gpt-oss-20b",
     "Qwen3-Coder-30B-A3B-Instruct": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     "Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit": "cpatonn/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit",
+    "Qwen2.5-Coder-7B-Instruct": "Qwen/Qwen2.5-Coder-7B-Instruct",
 }
 
 

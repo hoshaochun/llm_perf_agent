@@ -50,6 +50,7 @@ MODEL_NAME_ALIASES = {
     "Qwen3-Coder-30B-A3B-Instruct": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     "Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit":
         "cpatonn/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit",
+    "Qwen2.5-Coder-7B-Instruct": "Qwen/Qwen2.5-Coder-7B-Instruct",
 }
 
 # Map breakdown-label  ->  predictor operation key.
