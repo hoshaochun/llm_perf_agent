@@ -1,5 +1,5 @@
 import argparse
-from model_specs import PRESET_MODELS, get_quantization_bytes
+from configs.model_specs import PRESET_MODELS, get_quantization_bytes
 
 
 def calculate_kv_cache_size(

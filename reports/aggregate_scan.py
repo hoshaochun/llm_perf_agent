@@ -9,9 +9,9 @@ Reads every `*.nsys-rep` in <scan_dir> and looks up its
       one row per input_len.
 
 Usage:
-    python scripts/aggregate_scan.py <scan_dir>
+    python reports/aggregate_scan.py <scan_dir>
 
-E.g.   python scripts/aggregate_scan.py perf_reports/decode_scan/gpt-oss-20b/
+E.g.   python reports/aggregate_scan.py profile/results/decode_scan/gpt-oss-20b/
 """
 from __future__ import annotations
 

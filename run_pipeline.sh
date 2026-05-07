@@ -2,8 +2,13 @@
 # End-to-end pipeline: an Nsight Systems profile -> per-layer kernel labels +
 # latency breakdown.
 #
-# Usage:   ./run_pipeline.sh <profile.nsys-rep> <prefill|decode> <num_layers>
-# Example: ./run_pipeline.sh perf_reports/decode_example3.nsys-rep decode 28
+# Usage:
+#   ./run_pipeline.sh <profile.nsys-rep> <prefill|decode> <num_layers> \
+#                     [<model> [<gpu>]]
+# Example:
+#   ./run_pipeline.sh perf_reports/decode_example3.nsys-rep decode 28
+#   ./run_pipeline.sh perf_reports/decode_bs1_out16384.nsys-rep decode 24 \
+#                     gpt-oss-20b 4090
 #
 # Pipeline stages:
 #   1. extract_kernel_flow.py    -- nsys-rep -> kernel_flow.parquet
@@ -15,25 +20,31 @@
 #   4. find_lm_head.py           -- LLM picks lm_head from rep iter's
 #                                   last_layer + epi+prologue
 #   5. aggregate_breakdown.py    -- sums per-label durations + lm_head
+#   [+] theoretical_latency.py   -- (when <model> given) actual vs roofline
+#                                   per operation
+#   [+] decode_position_scan.py  -- (decode mode) attn vs decode position
 #
 # Final output (printed to stdout):
 #   1. canonical layer pattern (per-position labels + mean duration)
 #   2. lm_head kernel + duration
-#   3. latency breakdown grouped into Attention / FFN / LM head / Other.
+#   3. latency breakdown grouped into Attention / FFN / LM head / Other
+#   4. (when <model> given) actual vs theoretical roofline table
 #
 # Intermediate artefacts written to out/<stem>/ ; full logs in
 # out/<stem>/pipeline.log.
 set -euo pipefail
 
 usage() {
-    sed -n '3,22p' "$0" >&2
+    sed -n '3,28p' "$0" >&2
     exit 1
 }
-[[ $# -eq 3 ]] || usage
+[[ $# -ge 3 && $# -le 5 ]] || usage
 
 PROFILE="$1"
 MODE="$2"
 NUM_LAYERS="$3"
+MODEL="${4:-}"
+GPU="${5:-4090}"
 
 [[ -f "$PROFILE" ]] || { echo "ERROR: profile not found: $PROFILE" >&2; exit 1; }
 [[ "$MODE" == "prefill" || "$MODE" == "decode" ]] || {
@@ -72,20 +83,26 @@ echo "Layers  : $NUM_LAYERS"
 echo
 
 run_stage "[1/5] extract kernel flow" \
-    uv run python scripts/extract_kernel_flow.py "$PROFILE_ABS"
+    uv run python analyze/extract_kernel_flow.py "$PROFILE_ABS"
 run_stage "[2/5] LLM identifies canonical layer pattern" \
-    uv run python scripts/find_canonical_layer.py "$STEM"
+    uv run python analyze/find_canonical_layer.py "$STEM"
 run_stage "[3/5] segment iters using canonical pattern" \
-    uv run python scripts/segment_iters.py "$STEM" \
+    uv run python analyze/segment_iters.py "$STEM" \
         --mode "$MODE" --num-layers "$NUM_LAYERS"
 run_stage "[4/5] LLM identifies lm_head" \
-    uv run python scripts/find_lm_head.py "$STEM"
+    uv run python analyze/find_lm_head.py "$STEM"
 run_stage "[5/5] aggregate latency breakdown" \
-    uv run python scripts/aggregate_breakdown.py "$STEM"
+    uv run python analyze/aggregate_breakdown.py "$STEM"
+
+if [[ -n "$MODEL" ]]; then
+    run_stage "[+] theoretical roofline analysis" \
+        uv run python theoretical/compare.py "$STEM" \
+            --model "$MODEL" --gpu "$GPU"
+fi
 
 if [[ "$MODE" == "decode" ]]; then
-    run_stage "[bonus] decode-position attention scan" \
-        uv run python scripts/decode_position_scan.py "$STEM"
+    run_stage "[+] decode-position attention scan" \
+        uv run python analyze/decode_position_scan.py "$STEM"
 fi
 
 # ----------------------- final structured output ----------------------------
@@ -159,13 +176,43 @@ if other_labels:
         print(f"    {l:<28s}  {v:>10,.3f} ms   ({v/grand_ms*100:5.2f}%)")
 
 print(f"\n  {'Total labelled':<30s}  {grand_ms:>10,.3f} ms")
+
+theor_path = out / "theoretical_latency.json"
+if theor_path.exists():
+    th = json.loads(theor_path.read_text())
+    print()
+    print("=" * 102)
+    print(f" ACTUAL vs THEORETICAL  (gpu={th['gpu']}, model={th['model']}"
+          + (f", batch={th['batch_size']}, input_len={th['input_len']}"
+             + (f", decode_pos={th['decode_pos']}" if th.get('decode_pos') else "")
+             ) + ")")
+    print("=" * 102)
+    print(f" {'operation':<22}  {'actual (ms)':>11}  {'theor (ms)':>10}  "
+          f"{'compute':>9}  {'memory':>9}  {'bound':>7}  {'a/t':>7}")
+    print(" " + "-" * 100)
+    for r in th["rows"]:
+        print(f" {r['label']:<22}  "
+              f"{r['actual_us']/1000:>11.3f}  "
+              f"{r['theor_bound_us']/1000:>10.3f}  "
+              f"{r['theor_compute_us']/1000:>9.3f}  "
+              f"{r['theor_memory_us']/1000:>9.3f}  "
+              f"{r['bound_kind']:>7}  "
+              f"{r['ratio_actual_over_theor']:>6.2f}x")
+    print(" " + "-" * 100)
+    sa = th['sum_actual_ms']; st = th['sum_theor_ms']
+    print(f" {'TOTAL (these ops)':<22}  "
+          f"{sa:>11.3f}  {st:>10.3f}  {'':>9}  {'':>9}  {'':>7}  "
+          f"{(sa/st if st>0 else 0):>6.2f}x")
+
 print()
 print("=" * 78)
 print(f" Artefacts: {out}/")
-print(f"   canonical.json   (LLM-identified layer pattern + labels)")
-print(f"   segmented.json   (rep iter's layer-loop + epi_prologue)")
-print(f"   lm_head.json     (LLM-identified lm_head kernel)")
-print(f"   breakdown.json   (latency totals by category)")
+print(f"   canonical.json              (LLM-identified layer pattern + labels)")
+print(f"   segmented.json              (rep iter's layer-loop + epi_prologue)")
+print(f"   lm_head.json                (LLM-identified lm_head kernel)")
+print(f"   breakdown.json              (latency totals by category)")
+if theor_path.exists():
+    print(f"   theoretical_latency.json   (actual vs roofline per op)")
 PY
 
 if [[ "$MODE" == "decode" ]]; then

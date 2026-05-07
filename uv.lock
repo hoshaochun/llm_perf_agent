@@ -178,6 +178,29 @@ wheels = [
 ]
 
 [[package]]
+name = "llm-perf-agent"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "numpy" },
+    { name = "openai" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "python-dotenv" },
+    { name = "tqdm" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=2.4.4" },
+    { name = "openai", specifier = ">=2.33.0" },
+    { name = "pandas", specifier = ">=3.0.2" },
+    { name = "pyarrow", specifier = ">=24.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "tqdm", specifier = ">=4.67.3" },
+]
+
+[[package]]
 name = "numpy"
 version = "2.4.4"
 source = { registry = "https://pypi.org/simple" }
@@ -307,27 +330,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e4/a5/2f6ed612056819de445a433ca1f2821ac3dab7f150d569a59e9cc105de1d/pandas-3.0.2-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:734be7551687c00fbd760dc0522ed974f82ad230d4a10f54bf51b80d44a08702", size = 11815274 },
     { url = "https://files.pythonhosted.org/packages/00/2f/b622683e99ec3ce00b0854bac9e80868592c5b051733f2cf3a868e5fea26/pandas-3.0.2-cp314-cp314t-win_amd64.whl", hash = "sha256:57a07209bebcbcf768d2d13c9b78b852f9a15978dac41b9e6421a81ad4cdd276", size = 10888530 },
     { url = "https://files.pythonhosted.org/packages/cb/2b/f8434233fab2bd66a02ec014febe4e5adced20e2693e0e90a07d118ed30e/pandas-3.0.2-cp314-cp314t-win_arm64.whl", hash = "sha256:5371b72c2d4d415d08765f32d689217a43227484e81b2305b52076e328f6f482", size = 9455341 },
-]
-
-[[package]]
-name = "perf-agent"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "numpy" },
-    { name = "openai" },
-    { name = "pandas" },
-    { name = "pyarrow" },
-    { name = "python-dotenv" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=2.4.4" },
-    { name = "openai", specifier = ">=2.33.0" },
-    { name = "pandas", specifier = ">=3.0.2" },
-    { name = "pyarrow", specifier = ">=24.0.0" },
-    { name = "python-dotenv", specifier = ">=1.2.2" },
 ]
 
 [[package]]

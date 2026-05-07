@@ -8,7 +8,7 @@
 #
 # A pipeline failure on a single profile does NOT abort the sweep -- we
 # log the failure and continue, then summarize whatever succeeded at the
-# end via scripts/aggregate_scan.py.
+# end via reports/aggregate_scan.py.
 set -uo pipefail
 
 model_home="/mnt/llm_team/silicon_mind"
@@ -16,18 +16,21 @@ model_name="gpt-oss-20b"
 # model_name="Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit"
 # model_name="Qwen2.5-Coder-7B-Instruct"
 
+# GPU preset (matches a key in configs/hw_specs.py:PRESET_GPUS).
+gpu="4090"
+
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-n_layers=$(python3 benchmarks/get_n_layers.py "$model_name")
+n_layers=$(python3 profile/get_n_layers.py "$model_name")
 echo "Model    : $model_name"
 echo "n_layers : $n_layers"
 
-out_dir="perf_reports/prefill_scan/${model_name}"
+out_dir="profile/results/prefill_scan/${model_name}"
 mkdir -p "$out_dir"
 
 # Sweep variable: pass custom values as positional args, e.g.
-#   ./benchmarks/bench_prefill.sh 1 2 4 8 16 32 64
+#   ./profile/bench_prefill.sh 1 2 4 8 16 32 64
 if [[ $# -gt 0 ]]; then
     input_lens=("$@")
 else
@@ -56,11 +59,12 @@ for input_len in "${input_lens[@]}"; do
 
     echo
     echo "=== Analyzing $output_name.nsys-rep ==="
-    if ! ./run_pipeline.sh "$output_name.nsys-rep" prefill "$n_layers"; then
+    if ! ./run_pipeline.sh "$output_name.nsys-rep" prefill "$n_layers" \
+            "$model_name" "$gpu"; then
         echo "WARN: pipeline failed for $output_name; continuing sweep" >&2
     fi
 done
 
 echo
 echo "=== Cross-profile summary ==="
-uv run python scripts/aggregate_scan.py "$out_dir"
+uv run python reports/aggregate_scan.py "$out_dir"

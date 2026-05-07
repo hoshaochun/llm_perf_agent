@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from perf_agent.llm import LLMConfig, chat_json
+from analyze.llm import LLMConfig, chat_json
 
 
 SYSTEM_PROMPT = """You are a GPU performance expert analysing the

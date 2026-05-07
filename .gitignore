@@ -13,7 +13,7 @@ __pycache__/
 out/
 
 # Profiling reports (large nsys binaries; users supply their own)
-perf_reports/
+profile/results/
 *.nsys-rep
 *.sqlite
 *.qdrep

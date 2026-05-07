@@ -3,15 +3,17 @@
 Uses the same accounting as vram_estimation.py. Prints the chosen output_len to stdout
 so it can be consumed by shell scripts:
 
-    out=$(python benchmarks/max_output_len.py --model gpt-oss-20b --batch-size 256)
+    out=$(python profile/max_output_len.py --model gpt-oss-20b --batch-size 256)
 """
 import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))             # for sibling vram_estimation
+sys.path.insert(0, str(_HERE.parent))      # for top-level `configs/` package
 
-from model_specs import PRESET_MODELS
+from configs.model_specs import PRESET_MODELS
 from vram_estimation import calculate_kv_cache_size, calculate_model_size
 
 

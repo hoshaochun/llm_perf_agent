@@ -1,7 +1,7 @@
 """Extract the overall kernel execution flow from a Nsight Systems profile.
 
 Usage:
-    uv run python scripts/extract_kernel_flow.py path/to/profile.nsys-rep
+    uv run python analyze/extract_kernel_flow.py path/to/profile.nsys-rep
 
 Steps:
   1. nsys export --type sqlite (run lazily; reuses existing .sqlite if fresh).
