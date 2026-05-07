@@ -26,20 +26,24 @@ Qwen3-Coder-30B-MoE, gpt-oss-20b).
 
 ```
 step 1 (profile)     bench_prefill.sh                 bench_decode.sh
+                            │  loops over input_len / batch_size,
                             │  nsys profile vllm bench latency …
                             ▼
                      profile/results/<sweep>/<profile_name>.nsys-rep
 
-step 2 (analyze)     ./analyze_profile.sh <nsys-rep> <mode> <num_layers>
-                            │  extract → canonical (LLM) → segment →
-                            │  lm_head (LLM) → aggregate
+step 2 (analyze)     ./analyze_profile.sh <path> <mode> <num_layers>
+                            │  loops over every *.nsys-rep in <path>
+                            │  (or runs once if <path> is a single file).
+                            │  per profile: extract → canonical (LLM) →
+                            │  segment → lm_head (LLM) → aggregate.
                             ▼
                      out/<profile_name>/breakdown.json (+ canonical,
                                 segmented, lm_head, decode_position_scan)
 
-step 3 (compare)     ./compare_profile.sh <nsys-rep> <model> [<gpu>]
-                            │  build Request from workload args →
-                            │  per-op roofline → ratio + bottleneck
+step 3 (compare)     ./compare_profile.sh <path> <model> [<gpu>]
+                            │  loops over every *.nsys-rep in <path>.
+                            │  per profile: build Request from workload
+                            │  args → per-op roofline → ratio + bottleneck.
                             ▼
                      out/<profile_name>/theoretical_latency.json
 
@@ -49,7 +53,8 @@ summary (utility)    ./summarize_sweep.sh <sweep_dir>
 
 orchestrator         ./run_workflow.sh <prefill|decode> [<model> [<gpu>]] \
                                        [-- <bench-args>...]
-                     runs step 1 → loop step 2 → loop step 3 → summary
+                     chains step 1 → step 2 → step 3 → summary; each
+                     step's internal loop processes the whole sweep.
 ```
 
 ## Quickstart
@@ -72,11 +77,15 @@ uv sync
 ./run_workflow.sh prefill -- 1 2 4 8 16 32 64            # custom input_lens
 ./run_workflow.sh prefill gpt-oss-20b 4090 -- 1 2 4 8
 
-# 3b. Or run the steps individually.
-./bench_prefill.sh gpt-oss-20b 1 2 4 8                   # step 1 only
-./analyze_profile.sh path/to/foo.nsys-rep prefill 24     # step 2 (one profile)
-./compare_profile.sh path/to/foo.nsys-rep gpt-oss-20b    # step 3 (one profile)
-./summarize_sweep.sh profile/results/prefill_scan/gpt-oss-20b/  # cross-profile summary
+# 3b. Or run the steps individually (each takes a sweep dir or a single file).
+./bench_prefill.sh gpt-oss-20b 1 2 4 8                          # step 1
+./analyze_profile.sh profile/results/prefill_scan/gpt-oss-20b prefill 24
+./compare_profile.sh profile/results/prefill_scan/gpt-oss-20b gpt-oss-20b
+./summarize_sweep.sh profile/results/prefill_scan/gpt-oss-20b   # cross-profile summary
+
+# Or single-profile if you only have one nsys-rep on hand:
+./analyze_profile.sh some.nsys-rep prefill 24
+./compare_profile.sh some.nsys-rep gpt-oss-20b
 ```
 
 `<model>` for step 3 is a key from `configs/model_specs.py` (or one of
@@ -84,8 +93,8 @@ the short aliases handled by `theoretical/compare.py`); `<gpu>` is a key
 from `configs/hw_specs.py` (default `4090`).
 
 A failure on any single profile during step 2 or step 3 is logged and
-the orchestrator continues — partial sweeps still get a final summary
-over whatever succeeded.
+the step's internal loop continues — partial sweeps still get a final
+summary over whatever succeeded.
 
 ## Outputs (per profile, under `out/<profile_name>/`)
 
@@ -132,8 +141,8 @@ reports/                        # cross-profile summary internals
 
 bench_prefill.sh                # step 1 driver (prefill sweep)
 bench_decode.sh                 # step 1 driver (decode sweep)
-analyze_profile.sh              # step 2 driver (one profile)
-compare_profile.sh              # step 3 driver (one profile)
+analyze_profile.sh              # step 2 driver (loops over a sweep dir or one file)
+compare_profile.sh              # step 3 driver (loops over a sweep dir or one file)
 summarize_sweep.sh              # cross-profile summary utility
 run_workflow.sh                 # end-to-end orchestrator (steps 1+2+3 + summary)
 ```
