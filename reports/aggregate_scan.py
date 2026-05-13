@@ -102,6 +102,27 @@ def find_bottleneck(cats_actual_ms: dict[str, float],
     return f"{cat} ({pct:.1f}%)"
 
 
+def _find_theoretical_json(profile_name: str,
+                           scan_dir: Path) -> Path | None:
+    """Locate `theoretical_latency.json` for a profile in the new
+    reports/<model>/<profile_name>/ layout.
+
+    We first try the model inferred from the scan_dir's last component
+    (matches the convention written by bench_*.sh, e.g.
+    profile/results/decode_scan/gpt-oss-20b/).  If that doesn't exist
+    we fall back to globbing reports/*/<profile_name>/ and picking the
+    first hit so the script still works for non-standard scan dirs.
+    """
+    inferred_model = scan_dir.name
+    direct = ROOT / "reports" / inferred_model / profile_name / "theoretical_latency.json"
+    if direct.exists():
+        return direct
+    matches = sorted((ROOT / "reports").glob(
+        f"*/{profile_name}/theoretical_latency.json"
+    ))
+    return matches[0] if matches else None
+
+
 def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
     profiles = sorted(scan_dir.glob("*.nsys-rep"))
     if not profiles:
@@ -124,8 +145,8 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
             continue
         bd = json.loads(bd_path.read_text())
 
-        th_path = ROOT / "out" / profile_name / "theoretical_latency.json"
-        th = json.loads(th_path.read_text()) if th_path.exists() else None
+        th_path = _find_theoretical_json(profile_name, scan_dir)
+        th = json.loads(th_path.read_text()) if th_path is not None else None
 
         totals_us = bd["totals_us"]
         iter_actual_us = float(bd["sum_labeled_us"])

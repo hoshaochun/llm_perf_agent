@@ -43,9 +43,12 @@ step 2 (analyze)     ./analyze_profile.sh <path> <mode> <num_layers>
 step 3 (compare)     ./compare_profile.sh <path> <model> [<gpu>]
                             │  loops over every *.nsys-rep in <path>.
                             │  per profile: build Request from workload
-                            │  args → per-op roofline → ratio + bottleneck.
+                            │  args → per-op roofline → ratio + bottleneck;
+                            │  also re-roofline attn_score at every scanned
+                            │  decode position; record an `others` row for
+                            │  the unmodeled-kernel time.
                             ▼
-                     out/<profile_name>/theoretical_latency.json
+                     reports/<model>/<profile_name>/theoretical_latency.json
 
 summary (utility)    ./summarize_sweep.sh <sweep_dir>
                             ▼
@@ -99,15 +102,19 @@ summary over whatever succeeded.
 ## Outputs (per profile, under `out/<profile_name>/`)
 
 ```
-out/<profile_name>/
+out/<profile_name>/                       # working directory (step 2)
 ├── kernel_flow.parquet         # ordered kernel timeline on the dominant stream
 ├── canonical.json              # canonical layer pattern: P kernels in natural order
 ├── segmented.json              # rep iter's layer-loop + last-layer + epi+prologue
 ├── lm_head.json                # LLM-identified lm_head kernel + duration
 ├── breakdown.json              # per-label totals + per-position means       [step 2]
 ├── decode_position_scan.json   # (decode mode) attn vs decode position       [step 2]
-├── theoretical_latency.json    # actual vs roofline per op + ratio           [step 3]
 └── pipeline.log                # full stage-by-stage logs
+
+reports/<model>/<profile_name>/           # final outputs (step 3)
+└── theoretical_latency.json    # actual vs roofline per op + ratio +
+                                # "others" row for unmodeled time +
+                                # (decode) per-position attn comparison
 ```
 
 ## Repository layout
@@ -136,8 +143,10 @@ theoretical/                    # step 3 internals: roofline + bottleneck
   predictor.py                  # OperationLatency, matmul/attn/GGEMM models
   compare.py                    # actual-vs-theoretical for one breakdown.json
 
-reports/                        # cross-profile summary internals
-  aggregate_scan.py
+reports/                        # final per-profile theoretical outputs
+  aggregate_scan.py             # cross-profile summary internals
+  <model>/<profile_name>/       # gitignored; written by compare_profile.sh
+    theoretical_latency.json
 
 bench_prefill.sh                # step 1 driver (prefill sweep)
 bench_decode.sh                 # step 1 driver (decode sweep)

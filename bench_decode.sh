@@ -41,7 +41,7 @@ if [[ $# -gt 0 ]]; then
 else
     batch_sizes=(1 2 4 8 16 32 64 128 256)
 fi
-max_output_len=16384
+max_output_len=4200
 
 for batch_size in "${batch_sizes[@]}"; do
     output_len=$(python3 profile/max_output_len.py \

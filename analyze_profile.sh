@@ -190,10 +190,6 @@ analyze_one() {
     mkdir -p "$out_dir"
     LOG="$out_dir/pipeline.log"
     : > "$LOG"
-    # Drop any stale theoretical output from a prior compare_profile run;
-    # this run will only repopulate breakdown / canonical / segmented /
-    # lm_head, so the theoretical file would otherwise be inconsistent.
-    rm -f "$out_dir/theoretical_latency.json"
 
     echo
     echo "=== Analyzing $profile_name ==="
