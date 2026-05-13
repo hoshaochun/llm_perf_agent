@@ -61,6 +61,44 @@ def find_layer_starts(flow: pd.DataFrame, canonical_names: list[str],
     return np.where(match_count >= min_matches)[0]
 
 
+def split_decode_prefill(iters: list[dict],
+                         flow: pd.DataFrame) -> tuple[list[dict], list[dict]]:
+    """Separate decode iters from chunked-prefill iters by wall-clock duration.
+
+    vLLM's chunked prefill produces several long iters at the start of the
+    trace; the canonical decode layer pattern matches both at >= 70 %
+    (kernel names mostly overlap -- only the attention kernel differs),
+    so we can't tell them apart by kernel-name match alone.  Iter
+    duration, however, is dramatically larger for prefill chunks (many
+    tokens per request) than for decode iters (one token per request).
+
+    Strategy: sort iter durations, find the largest absolute gap; if
+    that gap is large relative to the shorter cluster's max duration
+    (here: > 50 %), treat iters below the gap as decode and the rest
+    as prefill.  If no clear cluster boundary exists, leave the list
+    alone (returns all iters as decode).
+    """
+    if len(iters) < 2:
+        for it in iters:
+            chunk = flow.iloc[it["layer_loop_start"]:it["layer_loop_end"] + 1]
+            it["dur_us"] = int(chunk["dur_ns"].sum()) / 1e3
+        return iters, []
+    for it in iters:
+        chunk = flow.iloc[it["layer_loop_start"]:it["layer_loop_end"] + 1]
+        it["dur_us"] = int(chunk["dur_ns"].sum()) / 1e3
+    sorted_iters = sorted(iters, key=lambda it: it["dur_us"])
+    durs = [it["dur_us"] for it in sorted_iters]
+    gaps = [durs[i + 1] - durs[i] for i in range(len(durs) - 1)]
+    max_gap_idx = max(range(len(gaps)), key=lambda i: gaps[i])
+    max_gap = gaps[max_gap_idx]
+    short_cluster_max = durs[max_gap_idx]
+    if short_cluster_max > 0 and max_gap > 0.5 * short_cluster_max:
+        decode = [it for it in iters if it["dur_us"] <= short_cluster_max]
+        prefill = [it for it in iters if it["dur_us"] > short_cluster_max]
+        return decode, prefill
+    return iters, []
+
+
 def group_into_iters(matches: np.ndarray, period: int, num_layers: int
                      ) -> list[dict]:
     """Group P-spaced layer matches into per-iter records."""
@@ -132,6 +170,24 @@ def main() -> int:
     print(f"# {len(iters)} complete iters detected (K values: {K_dist})")
 
     is_prefill = args.mode == "prefill"
+
+    # In decode mode, filter out vLLM's chunked-prefill iters by latency.
+    # See split_decode_prefill() for rationale; prefill layers share most
+    # kernel names with decode layers (only attn differs) so the canonical
+    # scan in segment_iters can't tell them apart on its own.
+    if not is_prefill:
+        decode_iters, prefill_iters = split_decode_prefill(iters, flow)
+        if prefill_iters:
+            max_dec = max(it["dur_us"] for it in decode_iters) / 1000.0
+            min_pre = min(it["dur_us"] for it in prefill_iters) / 1000.0
+            print(f"# Filtered {len(prefill_iters)} chunked-prefill iter(s) "
+                  f"by latency (decode <= {max_dec:.1f} ms, "
+                  f"prefill >= {min_pre:.1f} ms)")
+        iters = decode_iters
+        if not iters:
+            print("ERROR: no decode iters left after prefill filter",
+                  file=sys.stderr)
+            return 1
     if args.rep_iter is not None:
         rep = args.rep_iter
     else:

@@ -38,7 +38,7 @@ step 2 (analyze)     ./analyze_profile.sh <path> <mode> <num_layers>
                             │  segment → lm_head (LLM) → aggregate.
                             ▼
                      out/<profile_name>/breakdown.json (+ canonical,
-                                segmented, lm_head, decode_position_scan)
+                                segmented, lm_head)
 
 step 3 (compare)     ./compare_profile.sh <path> <model> [<gpu>]
                             │  loops over every *.nsys-rep in <path>.
@@ -108,7 +108,6 @@ out/<profile_name>/                       # working directory (step 2)
 ├── segmented.json              # rep iter's layer-loop + last-layer + epi+prologue
 ├── lm_head.json                # LLM-identified lm_head kernel + duration
 ├── breakdown.json              # per-label totals + per-position means       [step 2]
-├── decode_position_scan.json   # (decode mode) attn vs decode position       [step 2]
 └── pipeline.log                # full stage-by-stage logs
 
 reports/<model>/<profile_name>/           # final outputs (step 3)
@@ -137,7 +136,6 @@ analyze/                        # step 2 internals: actual latency breakdown
   segment_iters.py
   find_lm_head.py
   aggregate_breakdown.py
-  decode_position_scan.py       # decode-only attn-vs-position scan
 
 theoretical/                    # step 3 internals: roofline + bottleneck
   predictor.py                  # OperationLatency, matmul/attn/GGEMM models

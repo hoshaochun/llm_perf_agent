@@ -23,7 +23,6 @@
 #   3. segment_iters.py         -- canonical-template scan -> per-iter
 #   4. find_lm_head.py          -- LLM picks lm_head from rep iter
 #   5. aggregate_breakdown.py   -- sums per-label durations + lm_head
-#   [+] decode_position_scan.py -- (decode) attn vs decode position
 #
 # Per-profile artefacts written to out/<profile_name>/, full logs in
 # out/<profile_name>/pipeline.log.  A failure on one profile is logged
@@ -155,30 +154,6 @@ print(f"   segmented.json              (rep iter's layer-loop + epi_prologue)")
 print(f"   lm_head.json                (LLM-identified lm_head kernel)")
 print(f"   breakdown.json              (latency totals by category)")
 PY
-
-    if [[ "$mode" == "decode" ]]; then
-        uv run python - "$profile_name" <<'PY'
-import json, sys
-from pathlib import Path
-profile_name = sys.argv[1]
-scan = json.loads(
-    (Path("out") / profile_name / "decode_position_scan.json").read_text()
-)
-print()
-print("=" * 78)
-print(" ATTENTION-SCORE LATENCY vs DECODE POSITION (KV-cache size)")
-print("=" * 78)
-print(f" {'pos':>5}  {'iter_latency (ms)':>20}  "
-      f"{'attn_score_latency (ms)':>25}  {'attn %':>8}")
-print(" " + "-" * 76)
-for r in scan["rows"]:
-    iter_ms = r["iter_dur_us"] / 1000.0
-    attn_ms = r["sum_attn_us"] / 1000.0
-    pct = (attn_ms / iter_ms * 100) if iter_ms > 0 else 0.0
-    print(f" {r['pos']:>5}  {iter_ms:>20.3f}  {attn_ms:>25.3f}  "
-          f"{pct:>7.2f}%")
-PY
-    fi
 }
 
 analyze_one() {
@@ -205,10 +180,6 @@ analyze_one() {
         uv run python analyze/find_lm_head.py "$profile_name" || return 1
     run_stage "[5/5] aggregate latency breakdown" \
         uv run python analyze/aggregate_breakdown.py "$profile_name" || return 1
-    if [[ "$MODE" == "decode" ]]; then
-        run_stage "[+] decode-position attention scan" \
-            uv run python analyze/decode_position_scan.py "$profile_name" || return 1
-    fi
 
     print_report "$profile_name" "$MODE" || return 1
     return 0

@@ -39,9 +39,22 @@ CAT_LABELS = {
 CATS = ["Attention", "FFN", "LM Head", "Other"]
 
 
-def parse_decode(profile_name: str) -> tuple[int, int] | None:
+def parse_decode(profile_name: str) -> dict | None:
+    """Parse decode profile names.
+
+    Two conventions:
+      `decode_bs<B>_in<I>`  -- long-input method, one KV-size per profile.
+      `decode_bs<B>_out<O>` -- legacy long-output method.
+
+    Returns a dict with `batch_size` and one of `input_len`/`output_len`.
+    """
+    m = re.match(r"decode_bs(\d+)_in(\d+)$", profile_name)
+    if m:
+        return {"batch_size": int(m.group(1)), "input_len": int(m.group(2))}
     m = re.match(r"decode_bs(\d+)_out(\d+)$", profile_name)
-    return (int(m.group(1)), int(m.group(2))) if m else None
+    if m:
+        return {"batch_size": int(m.group(1)), "output_len": int(m.group(2))}
+    return None
 
 
 def parse_prefill(profile_name: str) -> int | None:
@@ -173,6 +186,17 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
             iter_actual_us / 1000.0,
         )
 
+        # Per-op attn_score detail (used by the attn-vs-decode-position table).
+        attn_actual_us = float(totals_us.get("attn_score", 0.0))
+        attn_theor_us = None
+        attn_bound_kind = None
+        if th is not None:
+            for r in th["rows"]:
+                if r["label"] == "attn_score":
+                    attn_theor_us = float(r["theor_bound_us"])
+                    attn_bound_kind = r.get("bound_kind")
+                    break
+
         row = {
             "profile_name":   profile_name,
             "iter_actual_ms": iter_actual_us / 1000.0,
@@ -183,18 +207,40 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
             "cats_bound":     cats_bound,
             "bottleneck":     bottleneck,
             "has_theor":      th is not None,
+            "attn_actual_ms": attn_actual_us / 1000.0,
+            "attn_theor_ms":  (attn_theor_us / 1000.0) if attn_theor_us else None,
+            "attn_bound":     attn_bound_kind,
         }
         if mode == "decode":
-            parsed = parse_decode(profile_name)
-            if parsed:
-                row["batch_size"], row["output_len"] = parsed
+            parsed = parse_decode(profile_name) or {}
+            if "batch_size" in parsed:
+                row["batch_size"] = parsed["batch_size"]
+            if "input_len" in parsed:
+                row["input_len"] = parsed["input_len"]
+            if "output_len" in parsed:
+                row["output_len"] = parsed["output_len"]
         else:
             il = parse_prefill(profile_name)
             if il is not None:
                 row["input_len"] = il
         rows.append(row)
 
-    rows.sort(key=lambda r: r.get("batch_size" if mode == "decode" else "input_len", 0))
+    # Pick the sweep variable: input_len (new long-input decode method,
+    # prefill) > output_len (legacy decode) > batch_size (legacy decode).
+    if mode == "decode":
+        has_input = any("input_len" in r for r in rows)
+        has_output = any("output_len" in r for r in rows)
+        if has_input:
+            sweep_key = "input_len"
+        elif has_output:
+            sweep_key = "output_len"
+        else:
+            sweep_key = "batch_size"
+    else:
+        sweep_key = "input_len"
+    rows.sort(key=lambda r: r.get(sweep_key, 0))
+    for r in rows:
+        r["_sweep_key"] = sweep_key
     return mode, rows
 
 
@@ -203,17 +249,32 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
 # --------------------------------------------------------------------------
 
 
-def _row_index(row: dict, mode: str) -> str:
+_SWEEP_KEY_HEADER = {
+    "batch_size": "batch",
+    "input_len":  "input",
+    "output_len": "out_len",
+}
+
+
+def _sweep_key(rows: list[dict]) -> str:
+    return rows[0].get("_sweep_key", "batch_size") if rows else "batch_size"
+
+
+def _row_index(row: dict, mode: str, sweep_key: str) -> str:
     if mode == "decode":
         bs = row.get("batch_size", "?")
+        if sweep_key == "input_len":
+            il = row.get("input_len", "?")
+            return f" {bs:>5}  {il:>7}"
         ol = row.get("output_len", "?")
         return f" {bs:>5}  {ol:>7}"
     return f" {row.get('input_len', '?'):>5}"
 
 
-def _index_header(mode: str) -> str:
+def _index_header(mode: str, sweep_key: str) -> str:
     if mode == "decode":
-        return f" {'batch':>5}  {'out_len':>7}"
+        sweep_lbl = _SWEEP_KEY_HEADER.get(sweep_key, "swept")
+        return f" {'batch':>5}  {sweep_lbl:>7}"
     return f" {'input':>5}"
 
 
@@ -223,12 +284,13 @@ def print_iter_table(rows: list[dict], mode: str) -> None:
     print("=" * 100)
     print(f" {title}")
     print("=" * 100)
-    head_idx = _index_header(mode)
+    sk = _sweep_key(rows)
+    head_idx = _index_header(mode, sk)
     print(f"{head_idx}  {'iter (ms)':>10}  {'theor (ms)':>10}  "
           f"{'a/t':>7}  bottleneck")
     print(" " + "-" * 98)
     for r in rows:
-        idx = _row_index(r, mode)
+        idx = _row_index(r, mode, sk)
         a = r["iter_actual_ms"]
         t = r["iter_theor_ms"]
         if t and t > 0:
@@ -256,7 +318,8 @@ def print_category_table(rows: list[dict], mode: str) -> None:
     print("=" * 132)
     print(f" {title}")
     print("=" * 132)
-    head_idx = _index_header(mode)
+    sk = _sweep_key(rows)
+    head_idx = _index_header(mode, sk)
     cell_w = 28
     cat_hdr = "  ".join(f"{cat:^{cell_w}}" for cat in CATS)
     print(f"{head_idx}  {cat_hdr}")
@@ -267,7 +330,7 @@ def print_category_table(rows: list[dict], mode: str) -> None:
     print(f"{pad}  {sub}")
     print(" " + "-" * 130)
     for r in rows:
-        idx = _row_index(r, mode)
+        idx = _row_index(r, mode, sk)
         iter_ms = r["iter_actual_ms"]
         cells = []
         for cat in CATS:
@@ -277,6 +340,49 @@ def print_category_table(rows: list[dict], mode: str) -> None:
                 iter_ms,
             ))
         print(f"{idx}  " + "  ".join(cells))
+
+
+def print_attn_table(rows: list[dict], mode: str) -> None:
+    """attn_score actual vs theoretical, per (batch_size, decode_position).
+
+    Replaces the old in-trace decode_position_scan: with the long-input
+    decode method each profile IS one (batch, decode_position) data
+    point, so the scan-across-positions table is a cross-profile view.
+    Decode position is taken from input_len (new `decode_bs<B>_in<I>`
+    convention).  Rows are sorted by (batch_size, input_len).
+    """
+    if mode != "decode":
+        return
+    print()
+    print("=" * 100)
+    print(" DECODE — ATTN_SCORE LATENCY vs DECODE POSITION  "
+          "(one row per profile)")
+    print("=" * 100)
+    print(f" {'batch':>5}  {'input':>7}  "
+          f"{'iter (ms)':>10}  {'attn act (ms)':>14}  "
+          f"{'attn theor (ms)':>16}  {'a/t':>8}  {'bound':>7}")
+    print(" " + "-" * 98)
+    # Sort by batch_size then input_len for a coherent 2D sweep view.
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: (r.get("batch_size", 0), r.get("input_len", 0)),
+    )
+    for r in sorted_rows:
+        bs = r.get("batch_size", "?")
+        il = r.get("input_len", r.get("output_len", "?"))
+        iter_ms = r["iter_actual_ms"]
+        a_ms = r["attn_actual_ms"]
+        t_ms = r["attn_theor_ms"]
+        if t_ms is not None and t_ms > 0:
+            t_str = f"{t_ms:>16.3f}"
+            r_str = f"{a_ms/t_ms:>6.2f}x"
+            bound = r.get("attn_bound") or "-"
+        else:
+            t_str = f"{'-':>16}"
+            r_str = f"{'-':>7}"
+            bound = "-"
+        print(f" {bs:>5}  {il:>7}  {iter_ms:>10.3f}  {a_ms:>14.3f}  "
+              f"{t_str}  {r_str}  {bound:>7}")
 
 
 def main() -> int:
@@ -294,6 +400,7 @@ def main() -> int:
 
     print_iter_table(rows, mode)
     print_category_table(rows, mode)
+    print_attn_table(rows, mode)
 
     print()
     n_with_theor = sum(1 for r in rows if r["has_theor"])
