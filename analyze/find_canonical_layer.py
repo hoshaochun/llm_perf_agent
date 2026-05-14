@@ -146,7 +146,11 @@ def validate(result: dict) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("profile_name", help="profile name under out/")
+    ap.add_argument("profile_name", help="profile name under out/<gpu>/<model>/")
+    ap.add_argument("--gpu", required=True,
+                    help="GPU name; reads out/<gpu>/<model>/<profile_name>/")
+    ap.add_argument("--model", required=True,
+                    help="model name; reads out/<gpu>/<model>/<profile_name>/")
     ap.add_argument("--sample-offset", type=int, default=None,
                     help="trace index where the 100-kernel sample starts "
                          "(default: centered on the trace)")
@@ -155,7 +159,7 @@ def main() -> int:
                          "(default 100)")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.profile_name
+    out_dir = ROOT / "out" / args.gpu / args.model.replace("/", "_") / args.profile_name
     flow_path = out_dir / "kernel_flow.parquet"
     if not flow_path.exists():
         print(f"ERROR: {flow_path} not found", file=sys.stderr)

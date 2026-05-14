@@ -115,28 +115,16 @@ def find_bottleneck(cats_actual_ms: dict[str, float],
     return f"{cat} ({pct:.1f}%)"
 
 
-def _find_theoretical_json(profile_name: str,
-                           scan_dir: Path) -> Path | None:
-    """Locate `theoretical_latency.json` for a profile in the new
-    reports/<model>/<profile_name>/ layout.
-
-    We first try the model inferred from the scan_dir's last component
-    (matches the convention written by bench_*.sh, e.g.
-    profile/results/decode_scan/gpt-oss-20b/).  If that doesn't exist
-    we fall back to globbing reports/*/<profile_name>/ and picking the
-    first hit so the script still works for non-standard scan dirs.
-    """
-    inferred_model = scan_dir.name
-    direct = ROOT / "reports" / inferred_model / profile_name / "theoretical_latency.json"
-    if direct.exists():
-        return direct
-    matches = sorted((ROOT / "reports").glob(
-        f"*/{profile_name}/theoretical_latency.json"
-    ))
-    return matches[0] if matches else None
+def _find_theoretical_json(gpu: str, model: str, profile_name: str
+                           ) -> Path | None:
+    """Locate `theoretical_latency.json` for a profile in the
+    reports/<gpu>/<model>/<profile_name>/ layout."""
+    direct = (ROOT / "reports" / gpu / model / profile_name
+              / "theoretical_latency.json")
+    return direct if direct.exists() else None
 
 
-def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
+def load_rows(gpu: str, model: str, scan_dir: Path) -> tuple[str, list[dict]]:
     profiles = sorted(scan_dir.glob("*.nsys-rep"))
     if not profiles:
         sys.exit(f"ERROR: no .nsys-rep files in {scan_dir}")
@@ -148,17 +136,18 @@ def load_rows(scan_dir: Path) -> tuple[str, list[dict]]:
         sys.exit("ERROR: scan dir mixes decode and prefill profiles")
     mode = "decode" if is_decode else "prefill"
 
+    model_dirname = model.replace("/", "_")
     rows: list[dict] = []
     for p in profiles:
         profile_name = p.stem
-        bd_path = ROOT / "out" / profile_name / "breakdown.json"
+        bd_path = ROOT / "out" / gpu / model_dirname / profile_name / "breakdown.json"
         if not bd_path.exists():
             print(f"# WARN: no breakdown.json for {profile_name} (pipeline failed?)",
                   file=sys.stderr)
             continue
         bd = json.loads(bd_path.read_text())
 
-        th_path = _find_theoretical_json(profile_name, scan_dir)
+        th_path = _find_theoretical_json(gpu, model_dirname, profile_name)
         th = json.loads(th_path.read_text()) if th_path is not None else None
 
         totals_us = bd["totals_us"]
@@ -278,12 +267,48 @@ def _index_header(mode: str, sweep_key: str) -> str:
     return f" {'input':>5}"
 
 
+def _group_decode_by_kv(rows: list[dict]) -> list[tuple[int, list[dict]]]:
+    """Group decode rows by input_len (= kv_cache_len), batch_size inner."""
+    by_kv: dict[int, list[dict]] = {}
+    for r in rows:
+        kv = int(r.get("input_len", r.get("output_len", 0)))
+        by_kv.setdefault(kv, []).append(r)
+    out = []
+    for kv in sorted(by_kv):
+        group = sorted(by_kv[kv], key=lambda r: r.get("batch_size", 0))
+        out.append((kv, group))
+    return out
+
+
+def _fmt_iter_row(r: dict) -> str:
+    bs = r.get("batch_size", "?")
+    a = r["iter_actual_ms"]
+    t = r["iter_theor_ms"]
+    if t and t > 0:
+        t_str = f"{t:>10.3f}"
+        r_str = f"{a/t:>5.2f}x"
+    else:
+        t_str = f"{'-':>10}"
+        r_str = f"{'-':>6}"
+    return f"   {bs:>5}  {a:>10.3f}  {t_str}  {r_str}  {r['bottleneck']}"
+
+
 def print_iter_table(rows: list[dict], mode: str) -> None:
     title = f"{mode.upper()} SWEEP — ITERATION LATENCY  (actual vs theoretical roofline)"
     print()
     print("=" * 100)
     print(f" {title}")
     print("=" * 100)
+    if mode == "decode":
+        for kv, group in _group_decode_by_kv(rows):
+            print()
+            print(f"  kv_cache_len = {kv}")
+            print(f"   {'batch':>5}  {'iter (ms)':>10}  {'theor (ms)':>10}  "
+                  f"{'a/t':>7}  bottleneck")
+            print("   " + "-" * 96)
+            for r in group:
+                print(_fmt_iter_row(r))
+        return
     sk = _sweep_key(rows)
     head_idx = _index_header(mode, sk)
     print(f"{head_idx}  {'iter (ms)':>10}  {'theor (ms)':>10}  "
@@ -311,6 +336,19 @@ def _fmt_cat_cell(act_ms: float, theor_ms: float | None,
     return f"{act_ms:>7.2f} {'-':>7} {'-':>5} {pct:>5.1f}%"
 
 
+def _fmt_cat_row(r: dict) -> str:
+    bs = r.get("batch_size", "?")
+    iter_ms = r["iter_actual_ms"]
+    cells = []
+    for cat in CATS:
+        cells.append(_fmt_cat_cell(
+            r["cats_actual_ms"][cat],
+            r["cats_theor_ms"][cat],
+            iter_ms,
+        ))
+    return f"   {bs:>5}  " + "  ".join(cells)
+
+
 def print_category_table(rows: list[dict], mode: str) -> None:
     title = (f"{mode.upper()} SWEEP — PER-CATEGORY BREAKDOWN  "
              "(actual ms / theor ms / actual÷theor / % of iter)")
@@ -318,15 +356,25 @@ def print_category_table(rows: list[dict], mode: str) -> None:
     print("=" * 132)
     print(f" {title}")
     print("=" * 132)
-    sk = _sweep_key(rows)
-    head_idx = _index_header(mode, sk)
     cell_w = 28
     cat_hdr = "  ".join(f"{cat:^{cell_w}}" for cat in CATS)
-    print(f"{head_idx}  {cat_hdr}")
-    pad = " " * len(head_idx)
     sub = "  ".join(
         f"{'act':>7} {'theor':>7} {'r':>5} {'%':>6}" for _ in CATS
     )
+    if mode == "decode":
+        for kv, group in _group_decode_by_kv(rows):
+            print()
+            print(f"  kv_cache_len = {kv}")
+            print(f"   {'batch':>5}  {cat_hdr}")
+            print(f"   {'':>5}  {sub}")
+            print("   " + "-" * 128)
+            for r in group:
+                print(_fmt_cat_row(r))
+        return
+    sk = _sweep_key(rows)
+    head_idx = _index_header(mode, sk)
+    print(f"{head_idx}  {cat_hdr}")
+    pad = " " * len(head_idx)
     print(f"{pad}  {sub}")
     print(" " + "-" * 130)
     for r in rows:
@@ -388,13 +436,17 @@ def print_attn_table(rows: list[dict], mode: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("scan_dir", help="dir containing the *.nsys-rep sweep")
+    ap.add_argument("--gpu", required=True,
+                    help="GPU name; reads out/<gpu>/<model>/ and reports/<gpu>/<model>/")
+    ap.add_argument("--model", required=True,
+                    help="model name; reads out/<gpu>/<model>/ and reports/<gpu>/<model>/")
     args = ap.parse_args()
 
     scan_dir = Path(args.scan_dir)
     if not scan_dir.exists():
         sys.exit(f"ERROR: scan dir not found: {scan_dir}")
 
-    mode, rows = load_rows(scan_dir)
+    mode, rows = load_rows(args.gpu, args.model, scan_dir)
     if not rows:
         sys.exit("ERROR: no rows to summarize (no breakdown.json files found)")
 

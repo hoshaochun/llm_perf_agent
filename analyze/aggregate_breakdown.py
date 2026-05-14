@@ -29,8 +29,8 @@ CATEGORY_GROUPING = {
 }
 
 
-def aggregate(profile_name: str) -> dict:
-    out_dir = ROOT / "out" / profile_name
+def aggregate(gpu: str, model: str, profile_name: str) -> dict:
+    out_dir = ROOT / "out" / gpu / model.replace("/", "_") / profile_name
     canonical = json.loads((out_dir / "canonical.json").read_text())
     seg = json.loads((out_dir / "segmented.json").read_text())
     lmh = json.loads((out_dir / "lm_head.json").read_text())
@@ -71,10 +71,15 @@ def aggregate(profile_name: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("profile_name", help="profile name under out/")
+    ap.add_argument("profile_name", help="profile name under out/<gpu>/<model>/")
+    ap.add_argument("--gpu", required=True,
+                    help="GPU name; reads/writes out/<gpu>/<model>/<profile_name>/")
+    ap.add_argument("--model", required=True,
+                    help="model name; reads/writes out/<gpu>/<model>/<profile_name>/")
     args = ap.parse_args()
-    agg = aggregate(args.profile_name)
-    out_path = ROOT / "out" / args.profile_name / "breakdown.json"
+    agg = aggregate(args.gpu, args.model, args.profile_name)
+    out_path = (ROOT / "out" / args.gpu / args.model.replace("/", "_")
+                / args.profile_name / "breakdown.json")
     out_path.write_text(json.dumps(agg, indent=2))
     print(f"-> wrote {out_path}")
     return 0

@@ -31,7 +31,8 @@ def calculate_kv_cache_size(
     num_swa_layers = 0
     if sliding_window is not None:
         num_swa_layers = n_layers
-        if model.name == "openai/gpt-oss-20b":
+        # gpt-oss family alternates sliding / full attention per layer.
+        if model.name in ("openai/gpt-oss-20b", "openai/gpt-oss-120b"):
             num_swa_layers = n_layers // 2
 
     num_full_layers = n_layers - num_swa_layers

@@ -97,9 +97,13 @@ def build_user_prompt(seg: dict) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("profile_name")
+    ap.add_argument("--gpu", required=True,
+                    help="GPU name; reads/writes out/<gpu>/<model>/<profile_name>/")
+    ap.add_argument("--model", required=True,
+                    help="model name; reads/writes out/<gpu>/<model>/<profile_name>/")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.profile_name
+    out_dir = ROOT / "out" / args.gpu / args.model.replace("/", "_") / args.profile_name
     seg = json.loads((out_dir / "segmented.json").read_text())
 
     cfg = LLMConfig.from_env()

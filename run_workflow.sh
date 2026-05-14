@@ -72,7 +72,7 @@ sweep_dir="profile/results/${MODE}_scan/${MODEL}"
 # -------- Step 2: analyze sweep --------
 echo
 echo "==== Step 2: analyze each profile in $sweep_dir ===="
-./analyze_profile.sh "$sweep_dir" "$MODE" "$n_layers" || true
+./analyze_profile.sh "$sweep_dir" "$MODE" "$n_layers" "$GPU" "$MODEL" || true
 
 # -------- Step 3: compare sweep --------
 echo
@@ -82,4 +82,4 @@ echo "==== Step 3: compare each profile against theoretical bound ===="
 # -------- Cross-profile summary (utility) --------
 echo
 echo "==== Cross-profile summary ===="
-./summarize_sweep.sh "$sweep_dir"
+./summarize_sweep.sh "$sweep_dir" "$GPU" "$MODEL"

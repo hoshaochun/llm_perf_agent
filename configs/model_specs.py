@@ -343,6 +343,30 @@ PRESET_MODELS = {
         max_seq_len=131072,
         sliding_window=128
     ),
+    # gpt-oss-120b: same family as -20b, ~3.7x params (36 layers, 128 experts).
+    # Alternating sliding/full attention (every other layer); FFN in mxfp4,
+    # self_attn/router/embed/lm_head stay in bf16 per the HF config's
+    # modules_to_not_convert list.
+    "openai/gpt-oss-120b": ModelConfig(
+        name="openai/gpt-oss-120b",
+        model_orig_dtype="bf16",
+        ffn_weight_dtype="mxfp4",
+        attn_weight_dtype="bf16",
+        activation_dtype="bf16",
+        kv_cache_dtype="bf16",
+        n_layers=36,
+        hidden_size=2880,
+        vocab_size=201088,
+        n_attention_heads=64,
+        n_kv_heads=8,
+        head_dim=64,
+        intermediate_size=2880,
+        moe_intermediate_size=2880,
+        n_experts=128,
+        top_k=4,
+        max_seq_len=131072,
+        sliding_window=128
+    ),
     "Qwen/Qwen3-Coder-30B-A3B-Instruct": ModelConfig(
         name="Qwen/Qwen3-Coder-30B-A3B-Instruct",
         model_orig_dtype="bf16",
@@ -379,6 +403,49 @@ PRESET_MODELS = {
         moe_intermediate_size=768,
         n_experts=128,
         top_k=8,
+        max_seq_len=262144,
+    ),
+    # Dense Qwen3 32B.  No MoE, no sliding window, no tied embeddings.
+    # Dense FFN modeled via n_experts=1 / top_k=1.
+    "Qwen/Qwen3-32B": ModelConfig(
+        name="Qwen/Qwen3-32B",
+        model_orig_dtype="bf16",
+        ffn_weight_dtype="bf16",
+        attn_weight_dtype="bf16",
+        activation_dtype="bf16",
+        kv_cache_dtype="bf16",
+        n_layers=64,
+        hidden_size=5120,
+        vocab_size=151936,
+        n_attention_heads=64,
+        n_kv_heads=8,
+        head_dim=128,
+        intermediate_size=25600,
+        moe_intermediate_size=25600,
+        n_experts=1,
+        top_k=1,
+        max_seq_len=40960,
+    ),
+    # Dense Qwen3 4B Instruct (2507).  Tied word embeddings; no MoE; no
+    # sliding window.  As with the Qwen2.5 entry below, dense FFN is
+    # modeled via n_experts=1 / top_k=1.
+    "Qwen/Qwen3-4B-Instruct-2507": ModelConfig(
+        name="Qwen/Qwen3-4B-Instruct-2507",
+        model_orig_dtype="bf16",
+        ffn_weight_dtype="bf16",
+        attn_weight_dtype="bf16",
+        activation_dtype="bf16",
+        kv_cache_dtype="bf16",
+        n_layers=36,
+        hidden_size=2560,
+        vocab_size=151936,
+        n_attention_heads=32,
+        n_kv_heads=8,
+        head_dim=128,
+        intermediate_size=9728,
+        moe_intermediate_size=9728,
+        n_experts=1,
+        top_k=1,
         max_seq_len=262144,
     ),
     # Dense Qwen2-class model (no MoE).  We model the FFN as a single

@@ -43,24 +43,52 @@ if [[ $# -gt 0 ]]; then
 else
     input_lens=(1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192)
 fi
+MAX_ATTEMPTS=3
+
+# nsys occasionally fails to import its own capture ("Importer error /
+# Importation failed / Wrong event order ..."), producing an unusable
+# .nsys-rep.  Retry the test case a few times when that happens.
+profile_one() {
+    local input_len="$1" output_name="$2"
+    local log_file attempt nsys_status
+    log_file=$(mktemp)
+    for (( attempt=1; attempt<=MAX_ATTEMPTS; attempt++ )); do
+        echo
+        if (( attempt == 1 )); then
+            echo "=== Profiling prefill input_len=$input_len ==="
+        else
+            echo "=== Retry $attempt/$MAX_ATTEMPTS for input_len=$input_len ==="
+            rm -f "${output_name}.nsys-rep"
+        fi
+        nsys profile \
+            --trace-fork-before-exec=true \
+            --capture-range=cudaProfilerApi \
+            -o "$output_name" \
+            -f true \
+            --cuda-graph-trace=node \
+            vllm bench latency --model $model_home/$model_name \
+                --profiler-config.profiler cuda \
+                --num-iters-warmup 1 \
+                --num-iters 1 \
+                --max-num-batched-tokens 16384 \
+                --input-len "$input_len" \
+                --output-len 1 \
+                --batch-size 1 \
+                --profile 2>&1 | tee "$log_file"
+        nsys_status=${PIPESTATUS[0]}
+        if (( nsys_status == 0 )) \
+            && ! grep -qE "Importer error|Importation failed" "$log_file"; then
+            rm -f "$log_file"
+            return 0
+        fi
+        echo "WARN: nsys import/profile failed (attempt $attempt/$MAX_ATTEMPTS)" >&2
+    done
+    rm -f "$log_file"
+    echo "ERROR: gave up on input_len=$input_len after $MAX_ATTEMPTS attempts" >&2
+    return 1
+}
 
 for input_len in "${input_lens[@]}"; do
     output_name="$out_dir/prefill_in${input_len}"
-    echo
-    echo "=== Profiling prefill input_len=$input_len ==="
-    nsys profile \
-        --trace-fork-before-exec=true \
-        --capture-range=cudaProfilerApi \
-        -o "$output_name" \
-        -f true \
-        --cuda-graph-trace=node \
-        vllm bench latency --model $model_home/$model_name \
-            --profiler-config.profiler cuda \
-            --num-iters-warmup 1 \
-            --num-iters 1 \
-            --max-num-batched-tokens 16384 \
-            --input-len "$input_len" \
-            --output-len 1 \
-            --batch-size 1 \
-            --profile
+    profile_one "$input_len" "$output_name" || true
 done

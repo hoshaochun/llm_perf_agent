@@ -57,10 +57,13 @@ from theoretical.predictor import (
 # either the short directory name or the full HuggingFace key.
 MODEL_NAME_ALIASES = {
     "gpt-oss-20b": "openai/gpt-oss-20b",
+    "gpt-oss-120b": "openai/gpt-oss-120b",
     "Qwen3-Coder-30B-A3B-Instruct": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     "Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit":
         "cpatonn/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit",
     "Qwen2.5-Coder-7B-Instruct": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "Qwen3-4B-Instruct-2507": "Qwen/Qwen3-4B-Instruct-2507",
+    "Qwen3-32B": "Qwen/Qwen3-32B",
 }
 
 # Map breakdown-label  ->  predictor operation key.
@@ -82,10 +85,16 @@ def resolve_model(name: str):
     return PRESET_MODELS[key]
 
 
+GPU_NAME_ALIASES = {
+    "h200": "h200-nvl",  # input dir uses "h200", hw preset is "h200-nvl"
+}
+
+
 def resolve_gpu(name: str):
-    if name not in PRESET_GPUS:
+    key = GPU_NAME_ALIASES.get(name, name)
+    if key not in PRESET_GPUS:
         sys.exit(f"unknown gpu {name!r}; presets={list(PRESET_GPUS)}")
-    return PRESET_GPUS[name]
+    return PRESET_GPUS[key]
 
 
 def parse_decode_name(profile_name: str) -> dict | None:
@@ -237,7 +246,8 @@ def main() -> int:
                          "(default: rep_iter_index from segmented.json)")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.profile_name
+    model_dirname = args.model.replace("/", "_")
+    out_dir = ROOT / "out" / args.gpu / model_dirname / args.profile_name
     seg_path = out_dir / "segmented.json"
     bd_path = out_dir / "breakdown.json"
     if not seg_path.exists() or not bd_path.exists():
@@ -319,13 +329,12 @@ def main() -> int:
         "sum_theor_ms": sum_modeled_theor_ms,
     }
 
-    # Write to reports/<model>/<profile_name>/theoretical_latency.json.
+    # Write to reports/<gpu>/<model>/<profile_name>/theoretical_latency.json.
     # We use the CLI-supplied model name (rather than the alias-resolved
     # HF key) so the path matches whatever the user typed and what
     # `bench_*.sh` writes for the sweep dir; "/" in HF-style keys gets
     # replaced with "_" so the result is a single subdir.
-    model_dirname = args.model.replace("/", "_")
-    reports_dir = ROOT / "reports" / model_dirname / args.profile_name
+    reports_dir = ROOT / "reports" / args.gpu / model_dirname / args.profile_name
     reports_dir.mkdir(parents=True, exist_ok=True)
     out_path = reports_dir / "theoretical_latency.json"
     out_path.write_text(json.dumps(out_obj, indent=2))

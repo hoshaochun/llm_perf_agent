@@ -9,6 +9,7 @@ Steps:
   3. Pull the ordered kernel timeline on that stream, joined to short and
      demangled names.
   4. Persist to out/<profile-profile_name>/kernel_flow.parquet and print a summary.
+  5. Delete the .sqlite (it can be 10x the .nsys-rep size).
 
 Output columns: start, end, dur_ns, short_name, demangled_name.
 Rows are in execution order on the dominant stream.
@@ -46,34 +47,34 @@ def ensure_sqlite(profile: Path) -> Path:
 
 
 def extract_flow(sqlite_path: Path) -> tuple[pd.DataFrame, int]:
-    con = sqlite3.connect(sqlite_path)
-    streams = pd.read_sql(
-        """
-        SELECT streamId, COUNT(*) AS n_kernels,
-               SUM(end - start) AS total_ns
-        FROM CUPTI_ACTIVITY_KIND_KERNEL
-        GROUP BY streamId ORDER BY total_ns DESC
-        """,
-        con,
-    )
-    print("\n# Streams (top 5 by cumulative kernel time)")
-    streams_view = streams.copy()
-    streams_view["total_ms"] = streams_view["total_ns"] / 1e6
-    print(streams_view.head(5).drop(columns=["total_ns"]).to_string(index=False))
-    dominant = int(streams.iloc[0]["streamId"])
+    with sqlite3.connect(sqlite_path) as con:
+        streams = pd.read_sql(
+            """
+            SELECT streamId, COUNT(*) AS n_kernels,
+                   SUM(end - start) AS total_ns
+            FROM CUPTI_ACTIVITY_KIND_KERNEL
+            GROUP BY streamId ORDER BY total_ns DESC
+            """,
+            con,
+        )
+        print("\n# Streams (top 5 by cumulative kernel time)")
+        streams_view = streams.copy()
+        streams_view["total_ms"] = streams_view["total_ns"] / 1e6
+        print(streams_view.head(5).drop(columns=["total_ns"]).to_string(index=False))
+        dominant = int(streams.iloc[0]["streamId"])
 
-    df = pd.read_sql(
-        f"""
-        SELECT k.start, k.end, (k.end - k.start) AS dur_ns,
-               sn.value AS short_name, dn.value AS demangled_name
-        FROM CUPTI_ACTIVITY_KIND_KERNEL k
-        LEFT JOIN StringIds sn ON k.shortName     = sn.id
-        LEFT JOIN StringIds dn ON k.demangledName = dn.id
-        WHERE k.streamId = {dominant}
-        ORDER BY k.start
-        """,
-        con,
-    )
+        df = pd.read_sql(
+            f"""
+            SELECT k.start, k.end, (k.end - k.start) AS dur_ns,
+                   sn.value AS short_name, dn.value AS demangled_name
+            FROM CUPTI_ACTIVITY_KIND_KERNEL k
+            LEFT JOIN StringIds sn ON k.shortName     = sn.id
+            LEFT JOIN StringIds dn ON k.demangledName = dn.id
+            WHERE k.streamId = {dominant}
+            ORDER BY k.start
+            """,
+            con,
+        )
     return df, dominant
 
 
@@ -110,8 +111,12 @@ def print_summary(df: pd.DataFrame, dominant: int) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("profile", type=Path, help="path to a .nsys-rep file")
+    ap.add_argument("--gpu", required=True,
+                    help="GPU name; namespaces output as out/<gpu>/<model>/<stem>/")
+    ap.add_argument("--model", required=True,
+                    help="model name; namespaces output as out/<gpu>/<model>/<stem>/")
     ap.add_argument("--out-dir", type=Path, default=None,
-                    help="output directory (default: out/<profile-profile_name>/)")
+                    help="output directory (default: out/<gpu>/<model>/<profile-stem>/)")
     args = ap.parse_args()
 
     profile = args.profile.resolve()
@@ -119,7 +124,8 @@ def main() -> int:
         print(f"ERROR: profile not found: {profile}", file=sys.stderr)
         return 1
 
-    out_dir = args.out_dir or (ROOT / "out" / profile.stem)
+    model_dirname = args.model.replace("/", "_")
+    out_dir = args.out_dir or (ROOT / "out" / args.gpu / model_dirname / profile.stem)
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"# profile : {profile}")
     print(f"# out_dir : {out_dir}")
@@ -129,6 +135,9 @@ def main() -> int:
     out_path = out_dir / "kernel_flow.parquet"
     df.to_parquet(out_path, index=False)
     print(f"\n-> wrote {out_path} ({len(df):,} rows)")
+
+    sqlite_path.unlink(missing_ok=True)
+    print(f"# removed {sqlite_path.name}")
 
     print_summary(df, dominant)
     return 0

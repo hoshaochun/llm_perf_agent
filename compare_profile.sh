@@ -20,7 +20,8 @@
 # Requires that step 2 (analyze_profile.sh) has already run on each
 # profile (the comparison reads breakdown.json + segmented.json).
 #
-# Writes out/<profile_name>/theoretical_latency.json per profile.
+# Writes reports/<gpu>/<model>/<profile_name>/theoretical_latency.json
+# and reads step-2 output from out/<gpu>/<profile_name>/.
 #
 # <model> must be a key (or short alias) recognised by
 # theoretical/compare.py (see configs/model_specs.py).
@@ -52,11 +53,13 @@ else
     exit 1
 fi
 
+MODEL_DIRNAME="${MODEL//\//_}"
+
 compare_one() {
     local profile="$1"
     local profile_name out_dir
     profile_name="$(basename "$profile" .nsys-rep)"
-    out_dir="out/$profile_name"
+    out_dir="out/$GPU/$MODEL_DIRNAME/$profile_name"
     if [[ ! -f "$out_dir/breakdown.json" || ! -f "$out_dir/segmented.json" ]]; then
         echo "WARN: $out_dir is missing breakdown.json / segmented.json;"
         echo "      run analyze_profile.sh first."
@@ -64,7 +67,7 @@ compare_one() {
     fi
 
     echo
-    echo "=== Comparing $profile_name (model=$MODEL, gpu=$GPU) ==="
+    echo "=== Comparing $GPU/$MODEL_DIRNAME/$profile_name (gpu=$GPU) ==="
     uv run python theoretical/compare.py "$profile_name" \
         --model "$MODEL" --gpu "$GPU"
 }

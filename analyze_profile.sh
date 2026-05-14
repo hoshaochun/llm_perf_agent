@@ -3,16 +3,21 @@
 # profile or a whole sweep of profiles.
 #
 # Usage:
-#   ./analyze_profile.sh <path> <prefill|decode> <num_layers>
+#   ./analyze_profile.sh <path> <prefill|decode> <num_layers> <gpu> <model>
 #
 # <path> can be either:
 #   - a single .nsys-rep file   -> analyze that one profile
 #   - a directory               -> analyze every *.nsys-rep in it
 #                                  (typically a step-1 sweep dir)
 #
+# <gpu>/<model> namespace outputs under out/<gpu>/<model>/ so different
+# (gpu, model) combos with the same profile_name don't collide.  Both
+# are plain labels (e.g. "4090", "gpt-oss-20b"); "/" in model names is
+# replaced with "_" to keep the path one level deep.
+#
 # Examples:
-#   ./analyze_profile.sh profile/results/examples/decode_example3.nsys-rep decode 28
-#   ./analyze_profile.sh profile/results/decode_scan/gpt-oss-20b decode 24
+#   ./analyze_profile.sh profile/results/examples/decode_example3.nsys-rep decode 28 4090 gpt-oss-20b
+#   ./analyze_profile.sh profile/results/4090/decode_scan/gpt-oss-20b decode 24 4090 gpt-oss-20b
 #
 # This step ONLY measures the actual workload. Pair with
 # compare_profile.sh (step 3) for the theoretical comparison.
@@ -24,20 +29,23 @@
 #   4. find_lm_head.py          -- LLM picks lm_head from rep iter
 #   5. aggregate_breakdown.py   -- sums per-label durations + lm_head
 #
-# Per-profile artefacts written to out/<profile_name>/, full logs in
-# out/<profile_name>/pipeline.log.  A failure on one profile is logged
-# but does not abort the rest.
+# Per-profile artefacts written to out/<gpu>/<model>/<profile_name>/,
+# full logs in out/<gpu>/<model>/<profile_name>/pipeline.log.  A failure
+# on one profile is logged but does not abort the rest.
 set -uo pipefail
 
 usage() {
-    sed -n '3,30p' "$0" >&2
+    sed -n '3,34p' "$0" >&2
     exit 1
 }
-[[ $# -eq 3 ]] || usage
+[[ $# -eq 5 ]] || usage
 
 PATH_ARG="$1"
 MODE="$2"
 NUM_LAYERS="$3"
+GPU="$4"
+MODEL="$5"
+MODEL_DIRNAME="${MODEL//\//_}"
 
 [[ "$MODE" == "prefill" || "$MODE" == "decode" ]] || {
     echo "ERROR: mode must be 'prefill' or 'decode'" >&2; exit 1; }
@@ -76,12 +84,16 @@ run_stage() {
 print_report() {
     local profile_name="$1"
     local mode="$2"
-    uv run python - "$profile_name" <<'PY'
+    local gpu="$3"
+    local model_dirname="$4"
+    uv run python - "$profile_name" "$gpu" "$model_dirname" <<'PY'
 import json, sys
 from pathlib import Path
 
 profile_name = sys.argv[1]
-out = Path("out") / profile_name
+gpu = sys.argv[2]
+model_dirname = sys.argv[3]
+out = Path("out") / gpu / model_dirname / profile_name
 canonical = json.loads((out / "canonical.json").read_text())
 seg = json.loads((out / "segmented.json").read_text())
 lmh = json.loads((out / "lm_head.json").read_text())
@@ -161,27 +173,32 @@ analyze_one() {
     local profile_abs profile_name out_dir
     profile_abs="$(cd "$(dirname "$profile")" && pwd)/$(basename "$profile")"
     profile_name="$(basename "$profile" .nsys-rep)"
-    out_dir="out/$profile_name"
+    out_dir="out/$GPU/$MODEL_DIRNAME/$profile_name"
     mkdir -p "$out_dir"
     LOG="$out_dir/pipeline.log"
     : > "$LOG"
 
     echo
-    echo "=== Analyzing $profile_name ==="
+    echo "=== Analyzing $GPU/$MODEL_DIRNAME/$profile_name ==="
 
     run_stage "[1/5] extract kernel flow" \
-        uv run python analyze/extract_kernel_flow.py "$profile_abs" || return 1
+        uv run python analyze/extract_kernel_flow.py "$profile_abs" \
+            --gpu "$GPU" --model "$MODEL" || return 1
     run_stage "[2/5] LLM identifies canonical layer pattern" \
-        uv run python analyze/find_canonical_layer.py "$profile_name" || return 1
+        uv run python analyze/find_canonical_layer.py "$profile_name" \
+            --gpu "$GPU" --model "$MODEL" || return 1
     run_stage "[3/5] segment iters using canonical pattern" \
         uv run python analyze/segment_iters.py "$profile_name" \
+            --gpu "$GPU" --model "$MODEL" \
             --mode "$MODE" --num-layers "$NUM_LAYERS" || return 1
     run_stage "[4/5] LLM identifies lm_head" \
-        uv run python analyze/find_lm_head.py "$profile_name" || return 1
+        uv run python analyze/find_lm_head.py "$profile_name" \
+            --gpu "$GPU" --model "$MODEL" || return 1
     run_stage "[5/5] aggregate latency breakdown" \
-        uv run python analyze/aggregate_breakdown.py "$profile_name" || return 1
+        uv run python analyze/aggregate_breakdown.py "$profile_name" \
+            --gpu "$GPU" --model "$MODEL" || return 1
 
-    print_report "$profile_name" "$MODE" || return 1
+    print_report "$profile_name" "$MODE" "$GPU" "$MODEL_DIRNAME" || return 1
     return 0
 }
 

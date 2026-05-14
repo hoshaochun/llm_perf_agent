@@ -45,6 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 MATCH_THRESHOLD = 0.7  # fraction of canonical positions that must match
 PREFILL_ITERS_TO_SKIP = 5
+EPI_MAX_KERNELS = 400  # cap on emitted epi+prologue (lm_head is near its front)
 
 
 def find_layer_starts(flow: pd.DataFrame, canonical_names: list[str],
@@ -93,9 +94,15 @@ def split_decode_prefill(iters: list[dict],
     max_gap = gaps[max_gap_idx]
     short_cluster_max = durs[max_gap_idx]
     if short_cluster_max > 0 and max_gap > 0.5 * short_cluster_max:
-        decode = [it for it in iters if it["dur_us"] <= short_cluster_max]
-        prefill = [it for it in iters if it["dur_us"] > short_cluster_max]
-        return decode, prefill
+        short = [it for it in iters if it["dur_us"] <= short_cluster_max]
+        long = [it for it in iters if it["dur_us"] > short_cluster_max]
+        # Assign the larger cluster to decode (output_len decode iters
+        # vs a handful of chunked-prefill iters).  For long input_len
+        # the prefill cluster is slower; for short input_len it's
+        # faster — but in both cases there are more decode iters.
+        if len(short) >= len(long):
+            return short, long
+        return long, short
     return iters, []
 
 
@@ -117,22 +124,29 @@ def group_into_iters(matches: np.ndarray, period: int, num_layers: int
         last = int(matches[re_])
         if K == num_layers:
             ll_start = first
+            n_in_loop = num_layers
         elif K == num_layers - 1:
             # Layer 0 missing (different first kernel name, e.g. embedding-
-            # fused norm); extend backward by one period.
-            ll_start = first - period
-            if ll_start < 0:
-                skipped.append(K)
-                continue
+            # fused norm); try extending backward by one period.
+            if first - period >= 0:
+                ll_start = first - period
+                n_in_loop = num_layers
+            else:
+                # Trace starts before the canonical's pos 0 has room to
+                # appear; accept the iter as N-1 layers (totals will be
+                # short by ~1/N).
+                ll_start = first
+                n_in_loop = num_layers - 1
         else:
             skipped.append(K)
             continue
-        ll_end = ll_start + num_layers * period - 1
+        ll_end = ll_start + n_in_loop * period - 1
         iters.append({"layer_loop_start": ll_start,
                       "layer_loop_end": ll_end,
                       "first_match": first,
                       "last_match": last,
-                      "K": K})
+                      "K": K,
+                      "n_in_loop": n_in_loop})
     if skipped:
         print(f"# {len(skipped)} run(s) skipped (K values: "
               f"{skipped[:10]}{'...' if len(skipped) > 10 else ''})")
@@ -142,6 +156,10 @@ def group_into_iters(matches: np.ndarray, period: int, num_layers: int
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("profile_name")
+    ap.add_argument("--gpu", required=True,
+                    help="GPU name; reads/writes out/<gpu>/<model>/<profile_name>/")
+    ap.add_argument("--model", required=True,
+                    help="model name; reads/writes out/<gpu>/<model>/<profile_name>/")
     ap.add_argument("--mode", required=True, choices=("prefill", "decode"))
     ap.add_argument("--num-layers", type=int, required=True)
     ap.add_argument("--rep-iter", type=int, default=None,
@@ -150,7 +168,7 @@ def main() -> int:
                          "0 for prefill)")
     args = ap.parse_args()
 
-    out_dir = ROOT / "out" / args.profile_name
+    out_dir = ROOT / "out" / args.gpu / args.model.replace("/", "_") / args.profile_name
     flow = pd.read_parquet(out_dir / "kernel_flow.parquet").reset_index(drop=True)
     canonical = json.loads((out_dir / "canonical.json").read_text())
     period = int(canonical["period"])
@@ -204,6 +222,11 @@ def main() -> int:
     epi_start = ll_end + 1
     epi_end = (next_info["layer_loop_start"] - 1
                if next_info is not None else len(flow) - 1)
+    # The lm_head sits in the first handful of kernels after the layer
+    # loop; cap the emitted epi+prologue so find_lm_head's LLM prompt
+    # stays bounded even when iters are far apart (e.g. a long trace
+    # where only a few decode iters matched the canonical pattern).
+    epi_end = min(epi_end, epi_start + EPI_MAX_KERNELS - 1)
 
     layer_loop = flow.iloc[ll_start:ll_end + 1].reset_index(drop=True)
     epi = flow.iloc[epi_start:epi_end + 1].reset_index(drop=True)

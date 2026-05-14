@@ -20,9 +20,12 @@ from vram_estimation import calculate_kv_cache_size, calculate_model_size
 # Map local-checkout names to PRESET_MODELS keys.
 MODEL_NAME_ALIASES = {
     "gpt-oss-20b": "openai/gpt-oss-20b",
+    "gpt-oss-120b": "openai/gpt-oss-120b",
     "Qwen3-Coder-30B-A3B-Instruct": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     "Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit": "cpatonn/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit",
     "Qwen2.5-Coder-7B-Instruct": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "Qwen3-4B-Instruct-2507": "Qwen/Qwen3-4B-Instruct-2507",
+    "Qwen3-32B": "Qwen/Qwen3-32B",
 }
 
 
